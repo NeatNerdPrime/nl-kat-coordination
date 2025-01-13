@@ -1,22 +1,59 @@
 from __future__ import annotations
 
-import abc
 from enum import Enum, IntEnum
-from typing import (
-    List,
-    TypeVar,
-    Literal,
-    Dict,
-    Any,
-    Optional,
-    Type,
-    Set,
-    Union,
-    Tuple,
-)
+from typing import Any, ClassVar, Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field
-from typing_extensions import Annotated
+from pydantic import BaseModel, GetCoreSchemaHandler, RootModel
+from pydantic_core import CoreSchema, core_schema
+from pydantic_core.core_schema import ValidationInfo
+
+
+class Reference(str):
+    @classmethod
+    def parse(cls, ref_str: str) -> tuple[str, str]:
+        object_type, *natural_key_parts = ref_str.split("|")
+        return object_type, "|".join(natural_key_parts)
+
+    @property
+    def class_(self) -> str:
+        return self.parse(self)[0]
+
+    @property
+    def natural_key(self) -> str:
+        return self.parse(self)[1]
+
+    @property
+    def class_type(self) -> type[OOI]:
+        from octopoes.models.types import type_by_name
+
+        object_type, natural_key = self.parse(self)
+        ooi_class = type_by_name(object_type)
+        return ooi_class
+
+    @property
+    def tokenized(self) -> PrimaryKeyToken:
+        return self.class_type.get_tokenized_primary_key(self.natural_key)
+
+    @property
+    def human_readable(self) -> str:
+        return self.class_type.format_reference_human_readable(self)
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: GetCoreSchemaHandler) -> CoreSchema:
+        return core_schema.with_info_after_validator_function(cls.validate, core_schema.str_schema())
+
+    @classmethod
+    def validate(cls, v: str, info: ValidationInfo) -> Any:
+        if not isinstance(v, str):
+            raise TypeError("string required")
+        return cls(str(v))
+
+    def __repr__(self) -> str:
+        return f"Reference({super().__repr__()})"
+
+    @classmethod
+    def from_str(cls, ref_str: str) -> Reference:
+        return cls(ref_str)
 
 
 class ScanLevel(IntEnum):
@@ -30,19 +67,17 @@ class ScanLevel(IntEnum):
         return str(self.value)
 
 
-DEFAULT_SCAN_LEVEL_FILTER = {scan_level for scan_level in ScanLevel}
-
-
 class ScanProfileType(Enum):
     DECLARED = "declared"
     INHERITED = "inherited"
     EMPTY = "empty"
 
 
-class ScanProfileBase(BaseModel, abc.ABC):
+class ScanProfileBase(BaseModel):
     scan_profile_type: str
     reference: Reference
     level: ScanLevel
+    user_id: int | None = None
 
     def __eq__(self, other):
         if isinstance(other, ScanProfileBase) and self.__class__ == other.__class__:
@@ -70,35 +105,37 @@ class InheritedScanProfile(ScanProfileBase):
     scan_profile_type: Literal["inherited"] = ScanProfileType.INHERITED.value
 
 
-ScanProfile = Annotated[
-    Union[EmptyScanProfile, InheritedScanProfile, DeclaredScanProfile], Field(discriminator="scan_profile_type")
-]
-
-DEFAULT_SCAN_PROFILE_TYPE_FILTER = {scan_profile_type for scan_profile_type in ScanProfileType}
+ScanProfile = EmptyScanProfile | InheritedScanProfile | DeclaredScanProfile
 
 
-class OOI(BaseModel, abc.ABC):
-    object_type: Literal["OOI"]
+class OOI(BaseModel):
+    object_type: str
 
-    scan_profile: Optional[ScanProfile]
+    scan_profile: ScanProfile | None = None
+    user_id: int | None = None
 
-    _natural_key_attrs: List[str] = []
-    _reverse_relation_names: Dict[str, str] = {}
-    _information_value: List[str] = []
-    _traversable = True
+    _natural_key_attrs: ClassVar[list[str]] = []
+    _reverse_relation_names: ClassVar[dict[str, str]] = {}
+    _information_value: ClassVar[list[str]] = []
+    _traversable: ClassVar[bool] = True
 
     primary_key: str = ""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.primary_key = f"{self.get_object_type()}|{self.natural_key}"
+    def model_post_init(self, __context: Any) -> None:  # noqa: F841
+        self.primary_key = self.primary_key or f"{self.get_object_type()}|{self.natural_key}"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.primary_key
 
     @classmethod
     def get_object_type(cls) -> str:
         return cls.__name__
+
+    @classmethod
+    def strict_subclasses(cls) -> list[type[OOI]]:
+        """FastAPI creates duplicate class instances when parsing return types."""
+
+        return [subclass for subclass in cls.__subclasses__() if subclass.__name__ != cls.__name__]
 
     # FIXME: Legacy usage in Rocky/Boefjes
     @classmethod
@@ -154,19 +191,19 @@ class OOI(BaseModel, abc.ABC):
         return cls._reverse_relation_names.get(attr, f"{cls.get_object_type()}_{attr}")
 
     @classmethod
-    def get_tokenized_primary_key(cls, natural_key: str):
+    def get_tokenized_primary_key(cls, natural_key: str) -> PrimaryKeyToken:
         token_tree = build_token_tree(cls)
         natural_key_parts = natural_key.split("|")
 
-        def hydrate(node) -> Union[Dict, str]:
+        def hydrate(node: dict[str, dict | str]) -> dict | str:
             for key, value in node.items():
                 if isinstance(value, dict):
                     node[key] = hydrate(value)
                 else:
-                    node[key] = natural_key_parts.pop(0)
+                    node[key] = natural_key_parts.pop(0) if natural_key_parts else value
             return node
 
-        return PrimaryKeyToken.parse_obj(hydrate(token_tree))
+        return PrimaryKeyToken.model_validate(hydrate(token_tree))
 
     @classmethod
     def format_reference_human_readable(cls, reference: Reference) -> str:
@@ -176,68 +213,36 @@ class OOI(BaseModel, abc.ABC):
     def traversable(cls) -> bool:
         return cls._traversable
 
+    def serialize(self) -> SerializedOOI:
+        serialized_oois = {}
+        for key, value in self:
+            if key not in self.model_fields:
+                continue
+            serialized_oois[key] = self._serialize_value(value, self.model_fields[key].is_required())
+        return serialized_oois
+
+    def _serialize_value(self, value: Any, required: bool) -> SerializedOOIValue:
+        if isinstance(value, list):
+            return [self._serialize_value(item, required) for item in value]
+        if isinstance(value, Reference):
+            try:
+                return value.tokenized.root
+            except AttributeError:
+                if required:
+                    raise
+
+                return None
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, int | float):
+            return value
+        return str(value)
+
     def __hash__(self):
         return hash(self.primary_key)
 
 
 OOIClassType = TypeVar("OOIClassType")
-
-
-class Reference(str):
-    def __new__(cls, *args, **kwargs):
-        return str.__new__(cls, *args, **kwargs)
-
-    @classmethod
-    def parse(cls, ref_str: str) -> Tuple[str, str]:
-        object_type, *natural_key_parts = ref_str.split("|")
-        return object_type, "|".join(natural_key_parts)
-
-    @property
-    def class_(self) -> str:
-        return self.parse(self)[0]
-
-    @property
-    def natural_key(self) -> str:
-        return self.parse(self)[1]
-
-    @property
-    def class_type(self) -> Type[OOI]:
-        from octopoes.models.types import type_by_name
-
-        object_type, natural_key = self.parse(self)
-        ooi_class = type_by_name(object_type)
-        return ooi_class
-
-    @property
-    def tokenized(self) -> PrimaryKeyToken:
-        return self.class_type.get_tokenized_primary_key(self.natural_key)
-
-    @property
-    def human_readable(self) -> str:
-        return self.class_type.format_reference_human_readable(self)
-
-    @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
-
-    @classmethod
-    def __modify_schema__(cls, field_schema):
-        field_schema.update(
-            examples=["Network|internet", "IPAddressV4|internet|1.1.1.1"],
-        )
-
-    @classmethod
-    def validate(cls, v):
-        if not isinstance(v, str):
-            raise TypeError("string required")
-        return cls(str(v))
-
-    def __repr__(self):
-        return f"Reference({super().__repr__()})"
-
-    @classmethod
-    def from_str(cls, ref_str: str) -> Reference:
-        return cls(ref_str)
 
 
 def format_id_short(id_: str) -> str:
@@ -247,43 +252,44 @@ def format_id_short(id_: str) -> str:
     return id_
 
 
-class PrimaryKeyToken(BaseModel):
-    __root__: Dict[str, Union[str, PrimaryKeyToken]]
+class PrimaryKeyToken(RootModel):
+    root: dict[str, str | PrimaryKeyToken]
 
-    def __getattr__(self, attr_name: str) -> Union[str, PrimaryKeyToken]:
-        return self.__root__[attr_name]
+    def __getattr__(self, item: str) -> Any:
+        return self.root[item]
+
+    def __getitem__(self, item: str) -> Any:
+        return self.root[item]
 
 
-PrimaryKeyToken.update_forward_refs()
+PrimaryKeyToken.model_rebuild()
 
 
-def get_leaf_subclasses(cls: Type[OOI]) -> Set[Type[OOI]]:
-    if not cls.__subclasses__():
+def get_leaf_subclasses(cls: type[OOI]) -> set[type[OOI]]:
+    if not cls.strict_subclasses():
         return {cls}
-    child_sets = [get_leaf_subclasses(child_cls) for child_cls in cls.__subclasses__()]
+    child_sets = [get_leaf_subclasses(child_cls) for child_cls in cls.strict_subclasses()]
     return set().union(*child_sets)
 
 
-def build_token_tree(ooi_class: Type[OOI]) -> Dict:
-    tokens = {}
+def build_token_tree(ooi_class: type[OOI]) -> dict[str, dict | str]:
+    tokens: dict[str, dict | str] = {}
 
     for attribute in ooi_class._natural_key_attrs:
-        field = ooi_class.__fields__[attribute]
-        value = ""
+        field = ooi_class.model_fields[attribute]
 
-        if field.type_ == Reference:
+        if field.annotation in (Reference, Reference | None):
             from octopoes.models.types import related_object_type
 
             related_class = related_object_type(field)
             trees = [build_token_tree(related_class) for related_class in get_leaf_subclasses(related_class)]
 
             # combine trees
-            value = {key: value_ for tree in trees for key, value_ in tree.items()}
-
-        tokens[attribute] = value
+            tokens[attribute] = {key: value_ for tree in trees for key, value_ in tree.items()}
+        else:
+            tokens[attribute] = field.default
     return tokens
 
 
-DeclaredScanProfile.update_forward_refs()
-InheritedScanProfile.update_forward_refs()
-EmptyScanProfile.update_forward_refs()
+SerializedOOIValue: TypeAlias = None | str | int | float | dict[str, str | PrimaryKeyToken] | list["SerializedOOIValue"]
+SerializedOOI: TypeAlias = dict[str, SerializedOOIValue]

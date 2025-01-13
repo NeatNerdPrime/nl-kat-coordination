@@ -1,27 +1,26 @@
 import re
 from datetime import datetime
 from ipaddress import IPv4Address
-from typing import cast, List, Literal
+from typing import Literal, cast
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from octopoes.config.settings import XTDBType
 from octopoes.events.manager import EventManager
-from octopoes.models import Reference, OOI
-from octopoes.models.persistence import ReferenceField
+from octopoes.models import OOI, Reference
 from octopoes.models.ooi.dns.zone import DNSZone
 from octopoes.models.ooi.network import IPAddressV4, Network
-from octopoes.models.path import Segment, Path, Direction
+from octopoes.models.path import Direction, Path, Segment
+from octopoes.models.persistence import ReferenceField
 from octopoes.repositories.ooi_repository import XTDBOOIRepository
-from octopoes.xtdb.client import XTDBSession, XTDBHTTPClient
-from tests.mocks.mock_ooi_types import ALL_OOI_TYPES, MockIPAddressV4, MockIPPort, MockIPAddress, MockNetwork
+from octopoes.xtdb.client import XTDBHTTPClient, XTDBSession
+from tests.mocks.mock_ooi_types import ALL_OOI_TYPES, MockIPAddress, MockIPAddressV4, MockIPPort, MockNetwork
 
 
 class OOIRepositoryTest(TestCase):
     def setUp(self) -> None:
         self.event_manager = Mock(spec=EventManager)
         self.session = XTDBSession(Mock(spec=XTDBHTTPClient))
-        self.repository = XTDBOOIRepository(self.event_manager, self.session, XTDBType.CRUX)
+        self.repository = XTDBOOIRepository(self.event_manager, self.session)
 
     def test_node_from_ooi(self):
         internet = Network(name="internet")
@@ -29,39 +28,37 @@ class OOIRepositoryTest(TestCase):
         serial = self.repository.serialize(ip)
         self.assertEqual("Network|internet", serial["IPAddressV4/network"])
         self.assertEqual("1.1.1.1", serial["IPAddressV4/address"])
-        self.assertEqual("IPAddressV4|internet|1.1.1.1", serial["crux.db/id"])
+        self.assertEqual("IPAddressV4|internet|1.1.1.1", serial["xt/id"])
         self.assertNotIn("IPAddressV4/object_type", serial)
 
     def test_node_from_ooi_with_list(self):
         class TestOOIClass(OOI):
             object_type: Literal["TestOOIClass"] = "TestOOIClass"
             id: str = "test_id"
-            multiple_refs: List[Reference] = ReferenceField(Network)
+            multiple_refs: list[Reference] = ReferenceField(Network)
             _natural_key_attrs = ["id"]
 
         internet = Network(name="internet")
         internet2 = Network(name="internet2")
-        test = TestOOIClass(
-            multiple_refs=[internet.reference, internet2.reference],
-        )
+        test = TestOOIClass(multiple_refs=[internet.reference, internet2.reference])
         serial = self.repository.serialize(test)
         self.assertEqual(["Network|internet", "Network|internet2"], serial["TestOOIClass/multiple_refs"])
-        self.assertEqual("TestOOIClass|test_id", serial["crux.db/id"])
+        self.assertEqual("TestOOIClass|test_id", serial["xt/id"])
 
     def test_extract_node(self):
         internet = Network(name="internet")
         raw_node = {
-            "crux.db/id": "DNSZone|internet|test.nl.",
+            "xt/id": "DNSZone|internet|test.nl",
             "object_type": "DNSZone",
             "DNSZone/object_type": "DNSZone",
-            "DNSZone/hostname": "Hostname|internet|test.nl.",
+            "DNSZone/hostname": "Hostname|internet|test.nl",
             "DNSZone/name_servers": [],
         }
 
         serial = cast(DNSZone, self.repository.deserialize(raw_node))
         self.assertEqual("DNSZone", serial.object_type)
         self.assertEqual(internet.name, serial.hostname.tokenized.network.name)
-        self.assertEqual("test.nl.", serial.hostname.tokenized.name)
+        self.assertEqual("test.nl", serial.hostname.tokenized.name)
 
     @patch("octopoes.models.types.ALL_TYPES", ALL_OOI_TYPES)
     def test_construct_neighbour_query(self):
@@ -73,14 +70,15 @@ class OOIRepositoryTest(TestCase):
                     :query {
                         :find [
                             (pull ?e [
-                                :crux.db/id
+                                :xt/id
                                 {:MockIPPort/_address [*]}
                                 {:MockResolvedHostname/_address [*]}
+                                {:MockLabel/_ooi [*]}
                                 {:MockIPAddressV4/network [*]}
                             ])
                         ]
-                        :in [[ _crux_db_id ... ]]
-                        :where [[?e :crux.db/id _crux_db_id]]
+                        :in [[ _xt_id ... ]]
+                        :where [[?e :xt/id _xt_id]]
                     }
                     :in-args [["MockIPAddressV4|internet|1.1.1.1"]]
                 }"""
@@ -90,12 +88,12 @@ class OOIRepositoryTest(TestCase):
     @patch("octopoes.models.types.ALL_TYPES", ALL_OOI_TYPES)
     def test_encode_outgoing_segment(self):
         path = Path.parse("MockIPAddressV4.network")
-        self.assertEqual("MockIPAddressV4/network", self.repository.encode_segment(path.segments[0]))
+        self.assertEqual("MockIPAddressV4/network", path.segments[0].encode())
 
     @patch("octopoes.models.types.ALL_TYPES", ALL_OOI_TYPES)
     def test_encode_incoming_segment(self):
         path = Path.parse("MockIPAddressV4.<address [is MockIPPort]")
-        self.assertEqual("MockIPPort/_address", self.repository.encode_segment(path.segments[0]))
+        self.assertEqual("MockIPPort/_address", path.segments[0].encode())
 
     @patch("octopoes.models.types.ALL_TYPES", ALL_OOI_TYPES)
     def test_decode_outgoing_segment(self):
@@ -120,10 +118,10 @@ class OOIRepositoryTest(TestCase):
                     "MockResolvedHostname/_hostname": {
                         "MockResolvedHostname/address": "MockIPAddressV4|internet|1.1.1.1",
                         "MockResolvedHostname/hostname": "MockHostname|internet|example.com",
-                        "crux.db/id": "MockResolvedHostname|internet|example.com|internet|1.1.1.1",
+                        "xt/id": "MockResolvedHostname|internet|example.com|internet|1.1.1.1",
                         "object_type": "MockResolvedHostname",
                     },
-                    "crux.db/id": "MockHostname|internet|example.com",
+                    "xt/id": "MockHostname|internet|example.com",
                 }
             ]
         ]

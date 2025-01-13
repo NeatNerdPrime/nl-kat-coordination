@@ -2,19 +2,25 @@ name: Mula Run the test suite
 
 on:
   push:
+    branches:
+      - "main"
+      - "release-*"
+    tags:
+      - "*"
     paths:
       - mula/**
+      - .github/workflows/mula_test.yml
   pull_request:
     paths:
       - mula/**
+      - .github/workflows/mula_test.yml
 
 jobs:
   test:
-
     strategy:
       fail-fast: false
       matrix:
-        version: ['3.8', '3.9', '3.10', '3.11']
+        version: ["3.10", "3.11"]
 
     runs-on: ubuntu-20.04
     env:
@@ -22,10 +28,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Build the images
-        run: DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker-compose -f base.yml -f .ci/docker-compose.yml build --build-arg PYTHON_VERSION=${{ matrix.version }}
+        run: DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose --project-directory . -f .ci/docker-compose.yml build --build-arg PYTHON_VERSION=${{ matrix.version }}
         working-directory: ./mula
 
       - name: Run unit tests

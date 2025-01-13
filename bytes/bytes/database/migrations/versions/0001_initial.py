@@ -5,8 +5,9 @@ Revises:
 Create Date: 2021-10-19 07:43:37.479544
 
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
@@ -39,10 +40,7 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("boefje_meta_id", postgresql.UUID(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["boefje_meta_id"],
-            ["boefje_meta.id"],
-        ),
+        sa.ForeignKeyConstraint(["boefje_meta_id"], ["boefje_meta.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("id"),
     )
@@ -50,10 +48,7 @@ def upgrade() -> None:
         "output_ooi",
         sa.Column("ooi_id", sa.String(), nullable=False),
         sa.Column("normalizer_meta_id", postgresql.UUID(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["normalizer_meta_id"],
-            ["normalizer_meta.id"],
-        ),
+        sa.ForeignKeyConstraint(["normalizer_meta_id"], ["normalizer_meta.id"]),
         sa.PrimaryKeyConstraint("ooi_id", "normalizer_meta_id"),
     )
     # ### end Alembic commands ###

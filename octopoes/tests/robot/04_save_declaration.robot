@@ -9,30 +9,19 @@ Test Teardown       Teardown Test
 Add Several Append Origins
     Insert Calvin Outputs
     Verify Object Present    Hostname|internet|calvinnormalizer.com
-    Verify Origin Present    Hostname|internet|calvinnormalizer.com.    4321
+    Verify Origin Present    Hostname|internet|calvinnormalizer.com    824cfb63-1a46-4446-9941-d36e9550bee5
 
     Verify Object Present    Hostname|internet|calvinnormalizer.org
-    Verify Origin Present    Hostname|internet|calvinnormalizer.org.    43210
+    Verify Origin Present    Hostname|internet|calvinnormalizer.org    9bcc478d-00a2-4cae-976b-c7f4beea0375
 
     Insert Regular Declarations
 
 
 *** Keywords ***
-Setup Test
-    Start Monitoring    ${QUEUE_URI}
-
-Teardown Test
-    Stop Monitoring
-    Cleanup
-
-Verify Object Present
-    [Arguments]    ${reference}
-    ${response}    Get    ${OCTOPOES_URI}/object    params=reference=${reference}
-    Should Be Equal As Integers    ${response.status_code}    200
-
 Verify Origin Present
     [Arguments]    ${reference}    ${origin_task_id}
-    ${response}    Get    ${OCTOPOES_URI}/origins    params=reference=${reference}
+    ${params}    Create Dictionary    result=${reference}    valid_time=${VALID_TIME}
+    ${response}    Get    ${OCTOPOES_URI}/origins    params=${params}
     Should Be Equal As Integers    ${response.status_code}    200
     ${length}    Get Length    ${response.json()}
     Should Be Equal As Integers    ${length}    1

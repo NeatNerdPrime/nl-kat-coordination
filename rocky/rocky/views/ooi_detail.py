@@ -1,134 +1,73 @@
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Optional
+import json
+from collections import defaultdict
+from datetime import datetime
 
 from django.contrib import messages
-from django.core.paginator import Paginator, Page
-from django.http import Http404
-from django.shortcuts import redirect
-from requests.exceptions import RequestException
-
-from katalogus.client import get_katalogus
-from katalogus.utils import get_enabled_boefjes_for_ooi_class
-from katalogus.views.mixins import BoefjeMixin
-from octopoes.models import OOI
-from rocky import scheduler
-from rocky.views.mixins import OOIBreadcrumbsMixin
-from rocky.views.ooi_detail_related_object import OOIRelatedObjectAddView
-from rocky.views.ooi_view import BaseOOIDetailView
-from tools.forms.base import ObservedAtForm
+from django.utils.translation import gettext_lazy as _
+from jsonschema.validators import Draft202012Validator
 from tools.forms.ooi import PossibleBoefjesFilterForm
-from tools.models import Indemnification, OrganizationMember
+from tools.forms.scheduler import OOIDetailTaskFilterForm
 from tools.ooi_helpers import format_display
 
+from octopoes.models import Reference
+from octopoes.models.ooi.question import Question
+from rocky.views.ooi_detail_related_object import OOIFindingManager, OOIRelatedObjectManager
+from rocky.views.ooi_view import BaseOOIDetailView
+from rocky.views.tasks import TaskListView
 
-class PageActions(Enum):
-    START_SCAN = "start_scan"
 
-
-class OOIDetailView(
-    BoefjeMixin,
-    OOIRelatedObjectAddView,
-    BaseOOIDetailView,
-    OOIBreadcrumbsMixin,
-):
+class OOIDetailView(BaseOOIDetailView, OOIRelatedObjectManager, OOIFindingManager, TaskListView):
     template_name = "oois/ooi_detail.html"
-    connector_form_class = ObservedAtForm
-    scan_history_limit = 10
+    task_filter_form = OOIDetailTaskFilterForm
+    task_type = "boefje"
 
     def post(self, request, *args, **kwargs):
+        if self.action == self.CHANGE_CLEARANCE_LEVEL:
+            self.set_clearance_level()
+        if self.action == self.SUBMIT_ANSWER:
+            self.answer_ooi_questions()
+        if self.action == self.START_SCAN:
+            self.start_boefje_scan()
+        return super().post(request, *args, **kwargs)
+
+    def set_clearance_level(self) -> None:
         if not self.indemnification_present:
-            messages.add_message(
-                request, messages.ERROR, f"Indemnification not present at organization {self.organization}."
-            )
-            return self.get(request, status_code=403, *args, **kwargs)
+            return self.indemnification_error()
+        else:
+            clearance_level = int(self.request.POST.get("level"))
+            self.can_raise_clearance_level(self.ooi, clearance_level)  # returns appropriate messages
 
-        if "action" not in self.request.POST:
-            return self.get(request, status_code=404, *args, **kwargs)
+    def answer_ooi_questions(self) -> None:
+        if not isinstance(self.ooi, Question):
+            messages.error(self.request, _("Only Question OOIs can be answered."))
+            return
 
-        self.ooi = self.get_ooi()
+        schema_answer = self.request.POST.get("schema", "")
+        parsed_schema_answer = json.loads(schema_answer)
+        validator = Draft202012Validator(json.loads(self.ooi.json_schema))
 
-        if not self.handle_page_action(request.POST.get("action")):
-            return self.get(request, status_code=500, *args, **kwargs)
+        if not validator.is_valid(parsed_schema_answer):
+            for error in validator.iter_errors(parsed_schema_answer):
+                messages.error(self.request, error.message)
+            return
 
-        success_message = (
-            "Your scan is running successfully in the background. \n "
-            "Results will be added to the object list when they are in. "
-            "It may take some time, a refresh of the page may be needed to show the results."
-        )
-        messages.add_message(request, messages.SUCCESS, success_message)
+        raw = json.dumps(
+            {"schema": self.ooi.schema_id, "answer": parsed_schema_answer, "answer_ooi": self.ooi.ooi}
+        ).encode()
+        self.bytes_client.upload_raw(raw, {"answer"}, self.ooi.primary_key)
+        messages.success(self.request, _("Question has been answered."))
 
-        return redirect("task_list", organization_code=self.organization.code)
+    def start_boefje_scan(self) -> None:
+        boefje_id = self.request.POST.get("boefje_id")
+        boefje = self.get_katalogus().get_plugin(boefje_id)
+        ooi_id = self.request.GET.get("ooi_id")
+        ooi = self.get_single_ooi(pk=ooi_id)
+        self.run_boefje(boefje, ooi)
 
-    def handle_page_action(self, action: str) -> bool:
-        try:
-            if action == PageActions.START_SCAN.value:
-                boefje_id = self.request.POST.get("boefje_id")
-                ooi_id = self.request.GET.get("ooi_id")
-
-                boefje = get_katalogus(self.organization.code).get_boefje(boefje_id)
-                ooi = self.get_single_ooi(pk=ooi_id)
-                self.run_boefje_for_oois(boefje, [ooi])
-                return True
-
-        except RequestException as exception:
-            messages.add_message(self.request, messages.ERROR, f"{action} failed: '{exception}'")
-
-    def get_current_ooi(self) -> Optional[OOI]:
-        # self.ooi is already the current state of the OOI
-        if self.get_observed_at().date() == datetime.utcnow().date():
-            return self.ooi
-
-        try:
-            return self.get_ooi(pk=self.get_ooi_id(), observed_at=datetime.now(timezone.utc))
-        except Http404:
-            return None
-
-    def get_organizationmember(self):
-        return OrganizationMember.objects.get(user=self.request.user, organization=self.organization)
-
-    def get_organization_indemnification(self):
-        return Indemnification.objects.filter(organization=self.organization).exists()
-
-    def get_scan_history(self) -> Page:
-        scheduler_id = f"boefje-{self.organization.code}"
-
-        filters = [
-            {"field": "data__input_ooi", "operator": "eq", "value": self.get_ooi_id()},
-        ]
-
-        # FIXME: in context of ooi detail is doesn't make sense to search
-        # for an object name
-        if self.request.GET.get("scan_history_search"):
-            filters.append(
-                {
-                    "field": "data__boefje__name",
-                    "operator": "eq",
-                    "value": self.request.GET.get("scan_history_search"),
-                }
-            )
-
-        page = int(self.request.GET.get("scan_history_page", 1))
-
-        status = self.request.GET.get("scan_history_status")
-
-        min_created_at = None
-        if self.request.GET.get("scan_history_from"):
-            min_created_at = datetime.strptime(self.request.GET.get("scan_history_from"), "%Y-%m-%d")
-
-        max_created_at = None
-        if self.request.GET.get("scan_history_to"):
-            max_created_at = datetime.strptime(self.request.GET.get("scan_history_to"), "%Y-%m-%d")
-
-        scan_history = scheduler.client.get_lazy_task_list(
-            scheduler_id=scheduler_id,
-            status=status,
-            min_created_at=min_created_at,
-            max_created_at=max_created_at,
-            filters=filters,
-        )
-
-        return Paginator(scan_history, self.scan_history_limit).page(page)
+    def get_task_filters(self) -> dict[str, str | datetime | None]:
+        filters = super().get_task_filters()
+        filters["input_ooi"] = self.ooi.primary_key  # shows only tasks for this particular ooi
+        return filters
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -136,49 +75,61 @@ class OOIDetailView(
         filter_form = PossibleBoefjesFilterForm(self.request.GET)
 
         # List from katalogus
-        boefjes = get_enabled_boefjes_for_ooi_class(self.ooi.__class__, self.organization)
+        boefjes = []
+        if self.indemnification_present:
+            katalogus = self.get_katalogus()
+            boefjes = [boefje for boefje in katalogus.get_enabled_boefjes() if self.ooi.__class__ in boefje.consumes]
 
         if boefjes:
             context["enabled_boefjes_available"] = True
 
-        # Filter boefjes on scan level <= OOI clearance level when not "show all"
-        # or when not "acknowledged clearance level > 0"
-        member = self.get_organizationmember()
-        if (
-            (filter_form.is_valid() and not filter_form.cleaned_data["show_all"])
-            or member.acknowledged_clearance_level <= 0
-            or self.get_organization_indemnification()
-        ):
-            boefjes = [boefje for boefje in boefjes if boefje.scan_level.value <= self.ooi.scan_profile.level]
+        max_level = self.organization_member.max_clearance_level
+        if self.ooi.scan_profile and filter_form.is_valid() and not filter_form.cleaned_data["show_all"]:
+            max_level = min(max_level, self.ooi.scan_profile.level)
 
-        context["boefjes"] = boefjes
+        context["boefjes"] = [boefje for boefje in boefjes if boefje.scan_level.value <= max_level]
         context["ooi"] = self.ooi
 
-        declarations, observations, inferences = self.get_origins(
-            self.ooi.reference, self.get_observed_at(), self.organization
-        )
-        context["declarations"] = declarations
-        context["observations"] = observations
-        context["inferences"] = inferences
-        context["member"] = self.get_organizationmember()
-        context["object_details"] = format_display(self.get_ooi_properties(self.ooi))
-        context["ooi_types"] = self.get_ooi_types_input_values(self.ooi)
-        context["observed_at_form"] = self.get_connector_form()
-        context["observed_at"] = self.get_observed_at()
-        context["ooi_past_due"] = context["observed_at"].date() < datetime.utcnow().date()
-        context["related"] = self.get_related_objects()
-        context["ooi_current"] = self.get_current_ooi()
-        context["findings_severity_summary"] = self.findings_severity_summary()
-        context["severity_summary_totals"] = self.get_findings_severity_totals()
-        context["possible_boefjes_filter_form"] = filter_form
-        context["organization_indemnification"] = self.get_organization_indemnification()
-        context["scan_history"] = self.get_scan_history()
-        context["scan_history_form_fields"] = [
-            "scan_history_from",
-            "scan_history_to",
-            "scan_history_status",
-            "scan_history_search",
-            "scan_history_page",
-        ]
+        context.update(self.get_origins(self.ooi.reference, self.organization))
 
+        inference_params = self.octopoes_api_connector.list_origin_parameters(
+            {inference.origin.id for inference in context["inferences"]}, self.observed_at
+        )
+        inference_params_per_inference = defaultdict(list)
+        for inference_param in inference_params:
+            inference_params_per_inference[inference_param.origin_id].append(inference_param)
+
+        inference_origin_params: list[tuple] = []
+        for inference in context["inferences"]:
+            inference_origin_params.append((inference, inference_params_per_inference[inference.origin.id]))
+
+        context["inference_origin_params"] = inference_origin_params
+        context["member"] = self.organization_member
+
+        # TODO: generic solution to render ooi fields properly: https://github.com/minvws/nl-kat-coordination/issues/145
+        context["object_details"] = format_display(self.get_ooi_properties(self.ooi), ignore=["json_schema"])
+        context["ooi_types"] = self.get_ooi_types_input_values(self.ooi)
+
+        context["is_question"] = isinstance(self.ooi, Question)
+        context["ooi_past_due"] = context["observed_at"].date() < datetime.utcnow().date()
+        context["related"] = self.get_related_objects(context["observed_at"])
+
+        context["count_findings_per_severity"] = dict(self.count_findings_per_severity())
+        context["severity_summary_totals"] = sum(context["count_findings_per_severity"].values())
+
+        context["possible_boefjes_filter_form"] = filter_form
+        context["organization_indemnification"] = self.indemnification_present
+
+        if self.request.GET.get("show_clearance_level_inheritance"):
+            clearance_level_inheritance = self.get_scan_profile_inheritance(self.ooi)
+            formatted_inheritance = [
+                {
+                    "object_type": Reference.from_str(section.reference).class_,
+                    "primary_key": section.reference,
+                    "human_readable": Reference.from_str(section.reference).human_readable,
+                    "level": section.level,
+                }
+                for section in clearance_level_inheritance
+            ]
+            context["clearance_level_inheritance"] = formatted_inheritance
         return context

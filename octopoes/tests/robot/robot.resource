@@ -12,10 +12,9 @@ ${REF_IPADDR}                       IPAddressV4|internet|1.1.1.1
 ${REF_RESOLVEDHOSTNAME}             ResolvedHostname|internet|example.com|internet|1.1.1.1
 
 ${OCTOPOES_URI}                     http://localhost:29000/_dev
-${XTDB_URI}                         http://localhost:29002/_xtdb
+${XTDB_URI}                         http://localhost:29002/_xtdb/_dev
 ${QUEUE_URI}                        amqp://ci_user:ci_pass@localhost:29004/kat
 ${RABBIT_MQ_API_URI}                http://ci_user:ci_pass@localhost:29003/api
-${FLOWER_API_URI}                   http://localhost:5555/api
 ${VALID_TIME}                       2022-01-01T00:00:00+00:00
 
 ${SCAN_PROFILE_INCREMENT_QUEUE}     _dev__scan_profile_increments
@@ -23,6 +22,16 @@ ${SCAN_PROFILE_MUTATION_QUEUE}      _dev__scan_profile_mutations
 
 
 *** Keywords ***
+Declare Scan Profile
+    [Arguments]    ${reference}    ${scan_level}
+    ${params}    Get Valid Time Params
+    ${data}    Create Dictionary    reference=${reference}    level=${scan_level}    scan_profile_type=declared
+    ${response}    Put
+    ...    ${OCTOPOES_URI}/scan_profiles
+    ...    json=${data}
+    ...    params=${params}
+    Should Be Equal As Integers    ${response.status_code}    200
+
 Insert Observation
     [Arguments]    ${origin_file}
     ${norm_output_json}    Get File    ${origin_file}
@@ -52,14 +61,6 @@ Insert Regular Declarations
     Insert Declaration    tests/fixtures/regular_manual_declaration_with_null_values.json
 
     Await Sync
-
-Get Url
-    [Arguments]    ${url}
-    ${response}    Get    ${url}
-    Should Be Equal As Integers    ${response.status_code}    200
-    Should Be Equal    ${response.headers["content-type"]}    application/json
-    ${response_data}    Set Variable    ${response.json()}
-    RETURN    ${response_data}
 
 Get Messages From Queue
     [Arguments]    ${queue}    ${ackmode}
@@ -93,20 +94,28 @@ Clear XTDB
     ${response}    Post    ${XTDB_URI}/submit-tx    json=${transaction}    headers=${headers}
     Wait For XTDB Synced
 
-Cleanup
-    Clear XTDB
-    Wait For XTDB Synced
+Setup Test
+    Create XTDB node
+    Start Monitoring    ${QUEUE_URI}
+
+Teardown Test
+    Delete XTDB node
     Get Messages From Queue    octopoes    ack_requeue_false
     Get Messages From Queue    ${SCAN_PROFILE_INCREMENT_QUEUE}    ack_requeue_false
     Get Messages From Queue    ${SCAN_PROFILE_MUTATION_QUEUE}    ack_requeue_false
+    Stop Monitoring
 
 Await Sync
-    Sleep     100ms
+    Sleep    300ms
     Await Tasks Done
     Wait For XTDB Synced
 
 Get Objects
-    ${response_data}    Get Url    ${OCTOPOES_URI}/objects
+    ${params}    Get Valid Time Params
+    ${response}    Get    ${OCTOPOES_URI}/objects    params=${params}
+    Should Be Equal As Integers    ${response.status_code}    200
+    Should Be Equal    ${response.headers["content-type"]}    application/json
+    ${response_data}    Set Variable    ${response.json()}
     RETURN    ${response_data}
 
 Get Valid Time Params
@@ -114,11 +123,59 @@ Get Valid Time Params
     RETURN    ${valid_time_params}
 
 Await Tasks Done
-    Wait Until Keyword Succeeds    1 min    100ms    Task Type Empty    SENT
-    Wait Until Keyword Succeeds    1 min    100ms    Task Type Empty    RECEIVED
-    Wait Until Keyword Succeeds    1 min    100ms    Task Type Empty    STARTED
+    Wait Until Keyword Succeeds    1 min    200ms    Task Type Empty    SENT
+    Wait Until Keyword Succeeds    1 min    200ms    Task Type Empty    RECEIVED
+    Wait Until Keyword Succeeds    1 min    200ms    Task Type Empty    STARTED
 
 Task Type Empty
     [Arguments]    ${task_type}
     ${count}    Count Tasks    ${task_type}
     Should Be Equal As Integers    ${count}    0
+
+Object List Should Contain
+    [Arguments]    ${reference}
+    ${response_data}    Get Objects
+    ${pks}    Evaluate    [item["primary_key"] for item in ${response_data["items"]}]
+    Should Contain    ${pks}    ${reference}    ${reference} not found in object list
+
+Object List Should Not Contain
+    [Arguments]    ${reference}
+    ${response_data}    Get Objects
+    ${pks}    Evaluate    [item["primary_key"] for item in ${response_data["items"]}]
+    Should Not Contain    ${pks}    ${reference}    ${reference} found in object list
+
+Total Object Count Should Be
+    [Arguments]    ${length}
+    ${response_data}    Get Objects
+    Should Be Equal As Integers    ${response_data["count"]}    ${length}    Object count should be ${length}
+
+Recalculate Scan Profiles
+    ${params}    Get Valid Time Params
+    ${response}    Get
+    ...    ${OCTOPOES_URI}/scan_profiles/recalculate
+    ...    params=${params}
+    Should Be Equal As Integers    ${response.status_code}    200
+    Await Sync
+
+Verify Object Present
+    [Arguments]    ${reference}
+    ${params}    Create Dictionary
+    ...    reference=${reference}
+    ...    valid_time=${VALID_TIME}
+    ${response}    Get    ${OCTOPOES_URI}/object    params=${params}
+    Should Be Equal As Integers    ${response.status_code}    200
+
+Verify Object Not Present
+    [Arguments]    ${reference}
+    ${params}    Create Dictionary
+    ...    reference=${reference}
+    ...    valid_time=${VALID_TIME}
+    ${response}    Get    ${OCTOPOES_URI}/object    params=${params}    expected_status=404
+
+Create XTDB node
+    ${response}    Post    ${OCTOPOES_URI}/node
+    Should Be Equal As Integers    ${response.status_code}    200
+
+Delete XTDB node
+    ${response}    Delete    ${OCTOPOES_URI}/node
+    Should Be Equal As Integers    ${response.status_code}    200

@@ -1,15 +1,13 @@
-from typing import List, Iterator, Union
+from collections.abc import Iterator
+from typing import Any
 
 from octopoes.models import OOI
 from octopoes.models.ooi.dns.zone import Hostname
-from octopoes.models.ooi.findings import KATFindingType, Finding
+from octopoes.models.ooi.findings import Finding, KATFindingType
 from octopoes.models.ooi.web import Website
 
 
-def run(
-    input_ooi: Hostname,
-    additional_oois: List[Union[Finding, Website]],
-) -> Iterator[OOI]:
+def run(input_ooi: Hostname, additional_oois: list[Finding | Website], config: dict[str, Any]) -> Iterator[OOI]:
     # only websites have to comply with the internetnl rules
     websites = [websites for websites in additional_oois if isinstance(websites, Website)]
     if not websites:

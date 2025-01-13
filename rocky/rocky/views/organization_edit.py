@@ -1,17 +1,13 @@
+from account.forms import OrganizationUpdateForm
+from account.mixins import OrganizationPermissionRequiredMixin, OrganizationView
 from django.contrib import messages
-from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.urls.base import reverse
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import UpdateView
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
-
-from account.forms import OrganizationUpdateForm
 from tools.models import Organization
 
 
-@class_view_decorator(otp_required)
-class OrganizationEditView(PermissionRequiredMixin, UpdateView):
+class OrganizationEditView(OrganizationPermissionRequiredMixin, OrganizationView, UpdateView):
     form_class = OrganizationUpdateForm
     model = Organization
     template_name = "organizations/organization_edit.html"
@@ -22,9 +18,7 @@ class OrganizationEditView(PermissionRequiredMixin, UpdateView):
 
     def get_success_url(self):
         messages.add_message(
-            self.request,
-            messages.SUCCESS,
-            _("Organization %s successfully updated.") % (self.object.name),
+            self.request, messages.SUCCESS, _("Organization %s successfully updated.") % (self.object.name)
         )
         return reverse("organization_settings", kwargs={"organization_code": self.object.code})
 
@@ -37,10 +31,7 @@ class OrganizationEditView(PermissionRequiredMixin, UpdateView):
                 "url": reverse("organization_settings", kwargs={"organization_code": self.object.code}),
                 "text": self.object.name,
             },
-            {
-                "url": reverse("organization_edit", kwargs={"organization_code": self.object.code}),
-                "text": _("Edit"),
-            },
+            {"url": reverse("organization_edit", kwargs={"organization_code": self.object.code}), "text": _("Edit")},
         ]
 
         return context

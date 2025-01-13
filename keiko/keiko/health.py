@@ -1,7 +1,8 @@
 """Keiko health module."""
-from typing import Optional, Any, List
 
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from keiko.version import __version__
 
@@ -11,9 +12,9 @@ class ServiceHealth(BaseModel):
 
     service: str
     healthy: bool = False
-    version: Optional[str] = None
+    version: str | None = None
     additional: Any = None
-    results: List["ServiceHealth"] = []
+    results: list["ServiceHealth"] = Field(default_factory=list)
 
 
 ServiceHealth.update_forward_refs()
@@ -21,8 +22,4 @@ ServiceHealth.update_forward_refs()
 
 def get_health() -> ServiceHealth:
     """Determine health of Keiko service."""
-    return ServiceHealth(
-        service="keiko",
-        healthy=True,
-        version=__version__,
-    )
+    return ServiceHealth(service="keiko", healthy=True, version=__version__)

@@ -1,9 +1,6 @@
-from typing import List, Tuple, Union
-
 import docker
 
 from boefjes.job_models import BoefjeMeta
-
 
 ADR_VALIDATOR_REPOSITORY = "registry.gitlab.com/commonground/don/adr-validator"
 ADR_VALIDATOR_VERSION = "0.2.0"
@@ -17,9 +14,9 @@ def run_adr_validator(url: str) -> str:
     return client.containers.run(image, args, remove=True, read_only=True)
 
 
-def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
-    input = boefje_meta.arguments["input"]
-    api_url = input["api_url"]
+def run(boefje_meta: BoefjeMeta) -> list[tuple[set, bytes | str]]:
+    input_ooi = boefje_meta.arguments["input"]
+    api_url = input_ooi["api_url"]
 
     hostname = api_url["netloc"]["name"]
     path = api_url["path"]
@@ -29,9 +26,4 @@ def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
 
     output = run_adr_validator(url)
 
-    return [
-        (
-            set(),
-            output,
-        ),
-    ]
+    return [(set(), output)]

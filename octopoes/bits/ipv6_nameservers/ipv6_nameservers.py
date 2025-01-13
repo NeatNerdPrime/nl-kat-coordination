@@ -1,15 +1,13 @@
-from typing import List, Iterator, Union
+from collections.abc import Iterator
+from typing import Any
 
 from octopoes.models import OOI
 from octopoes.models.ooi.dns.records import DNSAAAARecord, DNSARecord, DNSNSRecord
 from octopoes.models.ooi.dns.zone import Hostname
-from octopoes.models.ooi.findings import KATFindingType, Finding
+from octopoes.models.ooi.findings import Finding, KATFindingType
 
 
-def run(
-    hostname: Hostname,
-    additional_oois: List[Union[DNSAAAARecord, DNSARecord]],
-) -> Iterator[OOI]:
+def run(hostname: Hostname, additional_oois: list[DNSAAAARecord | DNSARecord], config: dict[str, Any]) -> Iterator[OOI]:
     dns_ns_records = [dns_ns_record for dns_ns_record in additional_oois if isinstance(dns_ns_record, DNSNSRecord)]
     dns_aaaa_records = [
         dns_aaaa_record for dns_aaaa_record in additional_oois if isinstance(dns_aaaa_record, DNSAAAARecord)
@@ -24,5 +22,5 @@ def run(
         yield Finding(
             finding_type=finding_type.reference,
             ooi=dns_ns_record.reference,
-            description="This nameserver has no ipv6 address",
+            description="This nameserver has no IPv6 address",
         )

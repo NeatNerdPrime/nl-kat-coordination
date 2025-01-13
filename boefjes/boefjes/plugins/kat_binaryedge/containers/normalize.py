@@ -1,27 +1,17 @@
 import ipaddress
 import json
-from typing import Iterator, Union
+from collections.abc import Iterable
 
-from octopoes.models import OOI, Reference
-from octopoes.models.ooi.findings import KATFindingType, Finding
-from octopoes.models.ooi.network import (
-    IPPort,
-    Protocol,
-    PortState,
-    IPAddressV4,
-    IPAddressV6,
-    Network,
-)
+from boefjes.job_models import NormalizerOutput
+from octopoes.models import Reference
+from octopoes.models.ooi.findings import Finding, KATFindingType
+from octopoes.models.ooi.network import IPAddressV4, IPAddressV6, IPPort, Network, PortState, Protocol
 from octopoes.models.ooi.software import Software, SoftwareInstance
 
-from boefjes.job_models import NormalizerMeta
 
-
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     results = json.loads(raw)
-    boefje_meta = normalizer_meta.raw_data.boefje_meta
-    input_ = boefje_meta.arguments["input"]
-    pk_ooi = Reference.from_str(boefje_meta.input_ooi)
+    pk_ooi = Reference.from_str(input_ooi["primary_key"])
     network = Network(name="internet").reference
 
     # Structure based on https://docs.binaryedge.io/modules/<accepted_modules_name>/
@@ -35,29 +25,18 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
         protocol = scan["target"]["protocol"]
         ip = scan["target"]["ip"]
 
-        if input_["object_type"] in ["IPAddressV4", "IPAddressV6"]:
+        if input_ooi["object_type"] in ["IPAddressV4", "IPAddressV6"]:
             ip_ref = pk_ooi
         else:
             ipvx = ipaddress.ip_address(ip)
             if ipvx.version == 4:
-                ip_ooi = IPAddressV4(
-                    address=ip,
-                    network=network,
-                )
+                ip_ooi = IPAddressV4(address=ip, network=network)
             else:
-                ip_ooi = IPAddressV6(
-                    address=ip,
-                    network=network,
-                )
+                ip_ooi = IPAddressV6(address=ip, network=network)
             yield ip_ooi
             ip_ref = ip_ooi.reference
 
-        ip_port_ooi = IPPort(
-            address=ip_ref,
-            protocol=Protocol(protocol),
-            port=port_nr,
-            state=PortState("open"),
-        )
+        ip_port_ooi = IPPort(address=ip_ref, protocol=Protocol(protocol), port=port_nr, state=PortState("open"))
         yield ip_port_ooi
 
         software_ooi = Software(name=module.capitalize())

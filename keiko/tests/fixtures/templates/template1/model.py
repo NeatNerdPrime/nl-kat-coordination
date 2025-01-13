@@ -1,12 +1,10 @@
 """
 Template1 Datamodel
 """
-from typing import List
 
 from pydantic import BaseModel
 
 from keiko.base_models import DataShapeBase
-
 
 # pylint: disable=missing-class-docstring
 
@@ -21,4 +19,4 @@ class Model(BaseModel):
 
 
 class DataShape(DataShapeBase):
-    models: List[Model]
+    models: list[Model]

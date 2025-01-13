@@ -11,6 +11,7 @@ Test Teardown       Teardown Test
 
 *** Test Cases ***
 Inheritance Of Two Declared Scan Profiles
+    Await Sync
     Declare Scan Profile    ${REF_HOSTNAME}    ${4}
     Declare Scan Profile    ${REF_IPADDR}    ${2}
     Await Sync
@@ -25,17 +26,19 @@ Inheritance Of Two Declared Scan Profiles
     Verify Scan LeveL Filter    2    ${2}
     Verify Scan LeveL Filter    3    ${0}
     Verify Scan LeveL Filter    4    ${3}
-    Verify Scan LeveL Filter    0    ${1}
+    Verify Scan LeveL Filter    0    ${9}
     Verify Scan LeveL Filter    ${{ [2,4] }}    ${5}
     Verify Scan LeveL Filter    ${{ [3,4] }}    ${3}
-    Verify Scan LeveL Filter    ${{ [2,0] }}    ${3}
+    Verify Scan LeveL Filter    ${{ [2,0] }}    ${11}
     Verify Scan Profile Mutation Queue    ${REF_HOSTNAME}    ${{[0, 4]}}
     Verify Scan Profile Mutation Queue    ${REF_IPADDR}    ${{[0, 2]}}
     Verify Scan Profile Mutation Queue    ${REF_RESOLVEDHOSTNAME}    ${{[0, 4]}}
+    Total Object Count Should Be    14
 
 Recalculate Inheritance After Modification
     Declare Scan Profile    ${REF_HOSTNAME}    ${4}
     Declare Scan Profile    ${REF_IPADDR}    ${2}
+    Await Sync
     Recalculate Scan Profiles
     Set Scan Profile To Empty    ${REF_HOSTNAME}
     Recalculate Scan Profiles
@@ -61,24 +64,9 @@ Empty Scan Profiles
 
 *** Keywords ***
 Setup Test
-    Start Monitoring    ${QUEUE_URI}
+    robot.Setup Test
     Insert Normalizer Output
     Await Sync
-
-Teardown Test
-    Cleanup
-    Await Sync
-    Stop Monitoring
-
-Declare Scan Profile
-    [Arguments]    ${reference}    ${scan_level}
-    ${params}    Get Valid Time Params
-    ${data}    Create Dictionary    reference=${reference}    level=${scan_level}    scan_profile_type=declared
-    ${response}    Put
-    ...    ${OCTOPOES_URI}/scan_profiles
-    ...    json=${data}
-    ...    params=${params}
-    Should Be Equal As Integers    ${response.status_code}    200
 
 Set Scan Profile To Empty
     [Arguments]    ${reference}
@@ -90,17 +78,12 @@ Set Scan Profile To Empty
     ...    params=${params}
     Should Be Equal As Integers    ${response.status_code}    200
 
-Recalculate Scan Profiles
-    ${params}    Get Valid Time Params
-    ${response}    Get
-    ...    ${OCTOPOES_URI}/scan_profiles/recalculate
-    ...    params=${params}
-    Should Be Equal As Integers    ${response.status_code}    200
-    Await Sync
-
 Verify Scan Level
     [Arguments]    ${reference}    ${scan_level}
-    ${response}    Get    ${OCTOPOES_URI}/object    params=reference=${reference}
+    ${params}    Create Dictionary
+    ...    reference=${reference}
+    ...    valid_time=${VALID_TIME}
+    ${response}    Get    ${OCTOPOES_URI}/object    params=${params}
     Should Be Equal As Integers    ${response.status_code}    200
     Should Be Equal    ${response.headers["content-type"]}    application/json
     ${response_data}    Set Variable    ${response.json()}
@@ -129,7 +112,6 @@ Verify Scan Profile Increment Queue
 
 Verify Scan LeveL Filter
     [Arguments]    ${scan_level}    ${expected_count}
-    ${params}    Get Valid Time Params
     ${params}    Create Dictionary
     ...    scan_level=${scan_level}
     ...    valid_time=${VALID_TIME}

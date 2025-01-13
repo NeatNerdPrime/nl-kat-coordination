@@ -1,9 +1,11 @@
 {
-    "id": "kat_ssl_certificates_normalize",
-    "consumes": [
-        "ssl-certificates"
-    ],
-    "produces": [
-        "X509Certificate"
-    ]
+  "id": "kat_ssl_certificates_normalize",
+  "name": "SSL certificates",
+  "description": "Parses SSL certificates data into X509 certificates.",
+  "consumes": [
+    "boefje/ssl-certificates"
+  ],
+  "produces": [
+    "X509Certificate"
+  ]
 }

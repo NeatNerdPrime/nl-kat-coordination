@@ -1,48 +1,43 @@
-from typing import Any, Dict
+from typing import Any
+
+from account.mixins import OrganizationView
+from django.http import HttpRequest, HttpResponse
+from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
-from django.views.generic import ListView, FormView
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
-from account.mixins import OrganizationView
-from katalogus.client import get_katalogus
+from django.views.generic import FormView, ListView, TemplateView
+
 from katalogus.forms import KATalogusFilter
 
 
-@class_view_decorator(otp_required)
-class KATalogusView(ListView, OrganizationView, FormView):
-    """View of all plugins in KAT-alogus"""
+class KATalogusLandingView(OrganizationView):
+    """
+    Landing page for KAT-alogus.
+    """
 
-    template_name = "katalogus.html"
+    def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        return redirect(
+            reverse(
+                "boefjes_list",
+                kwargs={"organization_code": self.organization.code, "view_type": self.kwargs.get("view_type", "grid")},
+            )
+        )
+
+
+class BaseKATalogusView(OrganizationView, ListView, FormView):
     form_class = KATalogusFilter
 
-    def get_initial(self) -> Dict[str, Any]:
+    def setup(self, request, *args, **kwargs):
+        super().setup(request, *args, **kwargs)
+        self.katalogus_client = self.get_katalogus()
+
+    def get_initial(self) -> dict[str, Any]:
         initial = super().get_initial()
-
-        initial["sorting_options"] = self.request.GET.get("sorting_options")
-        initial["filter_options"] = self.request.GET.get("filter_options")
-
+        initial["sorting_options"] = self.request.GET.get("sorting_options", "a-z")
+        initial["filter_options"] = self.request.GET.get("filter_options", "all")
         return initial
 
-    def get(self, request, *args, **kwargs):
-        katalogus_client = get_katalogus(self.organization.code)
-        self.all_plugins = katalogus_client.get_all_plugins()
-        self.set_katalogus_view(kwargs)
-        return super().get(request, *args, **kwargs)
-
-    def set_katalogus_view(self, kwargs):
-        self.view = ""
-        if "view" in kwargs:
-            self.view = kwargs["view"]
-
-    def get_all_boefjes(self):
-        return [plugin for plugin in self.all_plugins if plugin["type"] == "boefje"]
-
-    def get_all_normalizers(self):
-        return [plugin for plugin in self.all_plugins if plugin["type"] == "normalizer"]
-
-    def get_queryset(self):
-        queryset = self.get_all_boefjes()
+    def filter_katalogus(self, queryset):
         if "filter_options" in self.request.GET:
             filter_options = self.request.GET.get("filter_options")
             queryset = self.filter_queryset(queryset, filter_options)
@@ -55,27 +50,78 @@ class KATalogusView(ListView, OrganizationView, FormView):
         if filter_options == "all":
             return queryset
         if filter_options == "enabled":
-            return [plugin for plugin in queryset if plugin["enabled"]]
+            return [plugin for plugin in queryset if plugin.enabled]
         if filter_options == "disabled":
-            return [plugin for plugin in queryset if not plugin["enabled"]]
+            return [plugin for plugin in queryset if not plugin.enabled]
 
     def sort_queryset(self, queryset, sort_options):
         if sort_options == "a-z":
             return queryset
         if sort_options == "z-a":
-            return reversed(queryset)
+            return queryset[::-1]
         if sort_options == "enabled-disabled":
-            return sorted(queryset, key=lambda item: not item["enabled"])
+            return sorted(queryset, key=lambda item: not item.enabled)
         if sort_options == "disabled-enabled":
-            return sorted(queryset, key=lambda item: item["enabled"])
+            return sorted(queryset, key=lambda item: item.enabled)
+
+    def sort_alphabetic_ascending(self, queryset):
+        return sorted(queryset, key=lambda item: item.name.lower())
+
+    def count_active_filters(self):
+        filter_options = self.request.GET.get("filter_options")
+        sortin_options = self.request.GET.get("sorting_options")
+        count_filter_options = 1 if filter_options and filter_options != "all" else 0
+        count_sorting_options = 1 if sortin_options and sortin_options != "a-z" else 0
+        return count_filter_options + count_sorting_options
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context["view_type"] = self.kwargs.get("view_type", "grid")
+        context["url_name"] = self.request.resolver_match.url_name
+        context["active_filters_counter"] = self.count_active_filters()
         context["breadcrumbs"] = [
-            {
-                "url": reverse("katalogus", kwargs={"organization_code": self.organization.code}),
-                "text": _("KAT-alogus"),
-            },
+            {"url": reverse("katalogus", kwargs={"organization_code": self.organization.code}), "text": _("KAT-alogus")}
         ]
-        context["view"] = self.view
+        return context
+
+
+class KATalogusView(BaseKATalogusView):
+    """View of all plugins in KAT-alogus"""
+
+    template_name = "katalogus.html"
+
+    def get_queryset(self):
+        queryset = self.sort_alphabetic_ascending(self.katalogus_client.get_plugins())
+        return self.filter_katalogus(queryset)
+
+
+class BoefjeListView(BaseKATalogusView):
+    """Showing only Boefjes in KAT-alogus"""
+
+    template_name = "boefjes.html"
+
+    def get_queryset(self):
+        queryset = self.sort_alphabetic_ascending(self.katalogus_client.get_boefjes())
+        return self.filter_katalogus(queryset)
+
+
+class NormalizerListView(BaseKATalogusView):
+    """Showing only Normalizers in KAT-alogus"""
+
+    template_name = "normalizers.html"
+
+    def get_queryset(self):
+        queryset = self.sort_alphabetic_ascending(self.katalogus_client.get_normalizers())
+        return self.filter_katalogus(queryset)
+
+
+class AboutPluginsView(OrganizationView, TemplateView):
+    template_name = "about_plugins.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["view_type"] = self.kwargs.get("view_type", "grid")
+        context["breadcrumbs"] = [
+            {"url": reverse("katalogus", kwargs={"organization_code": self.organization.code}), "text": _("KAT-alogus")}
+        ]
         return context

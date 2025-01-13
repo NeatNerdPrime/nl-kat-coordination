@@ -1,32 +1,20 @@
-from typing import List, Dict
-from typing import Set, Type, Tuple, Union
+from collections import Counter
 
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
-from django.views.generic import TemplateView
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
+from django.views.generic.base import TemplateView
+from tools.ooi_helpers import format_attr_name
+from tools.view_helpers import existing_ooi_type, get_mandatory_fields, url_with_querystring
 
 from octopoes.models import OOI
-from octopoes.models.ooi.findings import Finding, FindingType
-from octopoes.models.types import get_relations, OOI_TYPES, to_concrete
-from rocky.views.ooi_view import SingleOOITreeMixin
-from tools.ooi_helpers import (
-    get_knowledge_base_data_for_ooi,
-    get_finding_type_from_finding,
-    format_attr_name,
-    RiskLevelSeverity,
-)
-from tools.view_helpers import existing_ooi_type, url_with_querystring
+from octopoes.models.ooi.findings import Finding, FindingType, RiskLevelSeverity
+from octopoes.models.types import OOI_TYPES, get_relations, to_concrete
+from rocky.views.mixins import SingleOOITreeMixin
 
 
 class OOIRelatedObjectManager(SingleOOITreeMixin):
-    def setup(self, request, *args, **kwargs):
-        super().setup(request, *args, **kwargs)
-        self.api_connector = self.octopoes_api_connector
-
-    def get_related_objects(self):
+    def get_related_objects(self, observed_at):
         related = []
         for relation_name, children in self.tree.root.children.items():
             for child in children:
@@ -34,99 +22,13 @@ class OOIRelatedObjectManager(SingleOOITreeMixin):
                     continue
                 rel_name = format_attr_name(relation_name)
                 if rel_name.lower() != "findings":
-                    rel = {"name": rel_name, "reference": child.reference}
+                    rel = {
+                        "name": rel_name,
+                        "reference": child.reference,
+                        "mandatory_fields": get_mandatory_fields(self.request, params=["observed_at"]),
+                    }
                     related.append(rel)
         return related
-
-
-class OOIFindingManager(SingleOOITreeMixin):
-    def setup(self, request, *args, **kwargs):
-        super().setup(request, *args, **kwargs)
-        self.api_connector = self.octopoes_api_connector
-
-    def get_findings(self) -> List[Dict]:
-        findings: List[Dict] = []
-        for relation_name, children in self.tree.root.children.items():
-            for child in children:
-                if child.reference == self.tree.root.reference:
-                    continue
-                if child.reference.class_ == "Finding":
-                    findings.append(self.tree.store[str(child.reference)])
-        return findings
-
-    def get_findings_severity_totals(self):
-        return {
-            "total_occurrences": self.total_occurrences,
-        }
-
-    def findings_severity_summary(self) -> List[Dict[str, Union[str, int]]]:
-        summary_table = []
-        self.total_occurrences = 0
-        finding_details = self.get_finding_details()
-        for risk_level in RiskLevelSeverity:
-            occurrence_count = len(
-                list(
-                    filter(
-                        lambda x: x["risk_level_severity"] == risk_level.value,
-                        finding_details,
-                    )
-                )
-            )
-            summary_table.append(
-                {
-                    "risk_level": risk_level.value,
-                    "occurrences": occurrence_count,
-                }
-            )
-            self.total_occurrences += occurrence_count
-        return summary_table
-
-    def get_finding_details_sorted_by_score_desc(self):
-        finding_details = self.get_finding_details()
-        sorted_finding_details = sorted(finding_details, key=lambda x: x["risk_level_score"], reverse=True)
-        return sorted_finding_details
-
-    def get_finding_details(self) -> List[Dict[str, Union[str, int]]]:
-        finding_details = []
-        risk_level_score = []
-        for finding in self.get_findings():
-            finding_type = get_finding_type_from_finding(finding)
-            finding_type_knowledge_base = get_knowledge_base_data_for_ooi(finding_type)
-            finding_type_knowledge_base["id"] = finding.primary_key
-            finding_type_knowledge_base["human_readable"] = finding.human_readable
-            finding_details.append(finding_type_knowledge_base)
-            risk_level_score.append(finding_type_knowledge_base["risk_level_score"])
-        self.risk_level_score_sorted = sorted(list(set(risk_level_score)), reverse=True)
-        return finding_details
-
-
-@class_view_decorator(otp_required)
-class OOIRelatedObjectAddView(OOIRelatedObjectManager, OOIFindingManager, TemplateView):
-    template_name = "oois/ooi_detail_add_related_object.html"
-
-    def get(self, request, *args, **kwargs):
-        if "ooi_id" in request.GET:
-            self.ooi_id = self.get_ooi(pk=request.GET.get("ooi_id"))
-
-        if "add_ooi_type" in request.GET:
-            ooi_type_choice = self.split_ooi_type_choice(request.GET["add_ooi_type"])
-            if existing_ooi_type(ooi_type_choice["ooi_type"]):
-                return redirect(self.ooi_add_url(self.ooi_id, **ooi_type_choice))
-
-        if "status_code" in kwargs:
-            response = super().get(request, *args, **kwargs)
-            response.status_code = kwargs["status_code"]
-            return response
-
-        return super().get(request, *args, **kwargs)
-
-    def split_ooi_type_choice(self, ooi_type_choice) -> Dict[str, str]:
-        ooi_type = ooi_type_choice.split("|", 1)
-
-        return {
-            "ooi_type": ooi_type[0],
-            "ooi_relation": ooi_type[1] if len(ooi_type) > 1 else None,
-        }
 
     def ooi_add_url(self, ooi: OOI, ooi_type: str, ooi_relation: str = "ooi_id") -> str:
         """
@@ -145,7 +47,7 @@ class OOIRelatedObjectAddView(OOIRelatedObjectManager, OOIFindingManager, Templa
 
         return url_with_querystring(path, **query_params)
 
-    def get_datamodel(self) -> Dict[str, Dict[str, Set[Type[OOI]]]]:
+    def get_datamodel(self) -> dict[str, dict[str, set[type[OOI]]]]:
         datamodel = {}
         for ooi_name, ooi_ in OOI_TYPES.items():
             datamodel[ooi_name] = {
@@ -153,7 +55,7 @@ class OOIRelatedObjectAddView(OOIRelatedObjectManager, OOIFindingManager, Templa
             }
         return datamodel
 
-    def get_foreign_relations(self, ooi_class: Type[OOI]) -> List[Tuple[str, str]]:
+    def get_foreign_relations(self, ooi_class: type[OOI]) -> list[tuple[str, str]]:
         datamodel = self.get_datamodel()
 
         ret = []
@@ -163,9 +65,9 @@ class OOIRelatedObjectAddView(OOIRelatedObjectManager, OOIFindingManager, Templa
                     ret.append((foreign_ooi_class_name, attr_name))
         return ret
 
-    def get_ooi_types_input_values(self, ooi: OOI) -> List[Dict[str, str]]:
+    def get_ooi_types_input_values(self, ooi: OOI) -> list[dict[str, str]]:
         # to populate the "add object" dropdown with related OOI's
-        if isinstance(ooi, (Finding, FindingType)):
+        if isinstance(ooi, Finding | FindingType):
             return []
 
         foreign_relations = self.get_foreign_relations(ooi.__class__)
@@ -180,14 +82,65 @@ class OOIRelatedObjectAddView(OOIRelatedObjectManager, OOIFindingManager, Templa
             if relation == "ooi":
                 text = ooi_type
 
-            input_values.append(
-                {
-                    "text": text,
-                    "value": value,
-                }
-            )
+            input_values.append({"text": text, "value": value})
 
         return input_values
+
+
+class OOIFindingManager(SingleOOITreeMixin):
+    def get_findings(self) -> list[Finding]:
+        findings = []
+        for relation in self.tree.root.children.values():
+            for child in relation:
+                ooi = self.tree.store[str(child.reference)]
+                if isinstance(ooi, Finding) and ooi.reference != self.tree.root.reference:
+                    findings.append(ooi)
+        return findings
+
+    def count_findings_per_severity(self) -> Counter:
+        counter = Counter({severity: 0 for severity in RiskLevelSeverity})
+        for finding in self.get_findings():
+            finding_type: FindingType | None = self.tree.store.get(str(finding.finding_type), None)
+            if finding_type is not None and finding_type.risk_severity is not None:
+                counter.update([finding_type.risk_severity])
+            else:
+                counter.update([RiskLevelSeverity.UNKNOWN])
+        return counter
+
+    def get_finding_details_sorted_by_score_desc(self) -> list[tuple[Finding, FindingType]]:
+        finding_details = self.get_finding_details()
+        return list(sorted(finding_details, key=lambda x: x[1].risk_score or 0, reverse=True))
+
+    def get_finding_details(self) -> list[tuple[Finding, FindingType]]:
+        return [(finding, self.tree.store[str(finding.finding_type)]) for finding in self.get_findings()]
+
+
+class OOIRelatedObjectAddView(OOIRelatedObjectManager, TemplateView):
+    template_name = "oois/ooi_detail_add_related_object.html"
+
+    def get(self, request, *args, **kwargs):
+        if "ooi_id" in request.GET:
+            self.ooi_id = self.get_ooi(pk=request.GET["ooi_id"])
+
+        if "add_ooi_type" in request.GET:
+            if "|" in request.GET["add_ooi_type"]:
+                ooi_type, ooi_relation = request.GET["add_ooi_type"].split("|", 1)
+            else:
+                ooi_type = request.GET["add_ooi_type"]
+                ooi_relation = None
+
+            if existing_ooi_type(ooi_type):
+                if ooi_relation:
+                    return redirect(self.ooi_add_url(self.ooi_id, ooi_type, ooi_relation))
+                else:
+                    return redirect(self.ooi_add_url(self.ooi_id, ooi_type))
+
+        if "status_code" in kwargs:
+            response = super().get(request, *args, **kwargs)
+            response.status_code = kwargs["status_code"]
+            return response
+
+        return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

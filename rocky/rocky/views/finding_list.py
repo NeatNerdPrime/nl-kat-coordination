@@ -1,61 +1,123 @@
-from typing import Any, Dict, List, Optional
+from collections.abc import Iterable
+from datetime import datetime, timezone
+from typing import Any, Literal
 
-from django.contrib import messages
+import structlog
 from django.urls.base import reverse_lazy
 from django.utils.translation import gettext_lazy as _
-from octopoes.models.ooi.findings import Finding
+from django.views.generic import ListView
+from tools.forms.base import ObservedAtForm
+from tools.forms.findings import (
+    FindingSearchForm,
+    FindingSeverityMultiSelectForm,
+    MutedFindingSelectionForm,
+    OrderByFindingTypeForm,
+    OrderBySeverityForm,
+)
+from tools.view_helpers import Breadcrumb, BreadcrumbsMixin
 
-from rocky.views.mixins import OOIList
-from rocky.views.ooi_view import BaseOOIListView
-from tools.view_helpers import BreadcrumbsMixin
-from tools.ooi_helpers import get_finding_type_from_finding, get_knowledge_base_data_for_ooi, RiskLevelSeverity
-from account.mixins import OrganizationView
+from octopoes.models.ooi.findings import RiskLevelSeverity
+from rocky.views.mixins import ConnectorFormMixin, FindingList, OctopoesView, SeveritiesMixin
+
+logger = structlog.get_logger(__name__)
 
 
-def sort_by_severity_desc(findings) -> List[Dict[str, Any]]:
-    return sorted(findings, key=lambda x: x["risk_level_score"], reverse=True)
+def sort_by_severity_desc(findings: Iterable) -> list[dict[str, Any]]:
+    # Sorting is stable (when multiple records have the same key, their original
+    # order is preserved) so if we first sort by finding id the findings with
+    # the same risk score will be sorted by finding id
+    sorted_by_finding_id = sorted(findings, key=lambda x: x["finding_type"].id)
+    sorted_findings = sorted(sorted_by_finding_id, key=lambda x: x["risk_level_score"], reverse=True)
+    for index, finding in enumerate(sorted_findings, start=1):
+        finding["finding_number"] = index
+    return sorted_findings
 
 
 def generate_findings_metadata(
-    findings: OOIList, severity_filter: Optional[List[RiskLevelSeverity]] = None
-) -> List[Dict[str, Any]]:
+    findings: FindingList, severity_filter: Iterable[RiskLevelSeverity] | None = None
+) -> list[dict[str, Any]]:
     findings_meta = []
 
-    for finding in findings[: OOIList.HARD_LIMIT]:
-        finding_type = get_finding_type_from_finding(finding)
-        knowledge_base = get_knowledge_base_data_for_ooi(finding_type)
-        severity = RiskLevelSeverity(knowledge_base["risk_level_severity"])
-        if not severity_filter or severity in severity_filter:
+    for finding in findings[: FindingList.HARD_LIMIT]:
+        finding_type = finding.finding_type
+
+        if not severity_filter or (finding_type.risk_severity and finding_type.risk_severity in severity_filter):
             findings_meta.append(
                 {
+                    "finding_number": 0,
                     "finding": finding,
                     "finding_type": finding_type,
-                    "severity": severity.value.capitalize(),
-                    "risk_level_score": knowledge_base["risk_level_score"],
+                    "severity": finding_type.risk_severity.name if finding_type.risk_severity else "",
+                    "risk_level_score": finding_type.risk_score,
                 }
             )
 
     return sort_by_severity_desc(findings_meta)
 
 
-class FindingListView(BreadcrumbsMixin, BaseOOIListView, OrganizationView):
+class FindingListFilter(OctopoesView, ConnectorFormMixin, SeveritiesMixin, ListView):
+    connector_form_class = ObservedAtForm
+
+    def setup(self, request, *args, **kwargs):
+        super().setup(request, *args, **kwargs)
+        self.severities = self.get_severities()
+        self.muted_findings = request.GET.get("muted_findings", "non-muted")
+
+        self.exclude_muted = self.muted_findings == "non-muted"
+        self.only_muted = self.muted_findings == "muted"
+
+        self.search_string = request.GET.get("search", "")
+
+    def count_observed_at_filter(self) -> int:
+        return 1 if datetime.now(timezone.utc).date() != self.observed_at.date() else 0
+
+    def count_active_filters(self):
+        return len(self.severities) + 1 if self.muted_findings else 0 + self.count_observed_at_filter()
+
+    def get_queryset(self) -> FindingList:
+        return FindingList(self.octopoes_api_connector, **self.get_queryset_params())
+
+    def get_queryset_params(self):
+        return {
+            "valid_time": self.observed_at,
+            "severities": self.severities,
+            "exclude_muted": self.exclude_muted,
+            "only_muted": self.only_muted,
+            "search_string": self.search_string,
+            "order_by": self.order_by,
+            "asc_desc": self.sorting_order,
+        }
+
+    @property
+    def order_by(self) -> Literal["score", "finding_type"]:
+        return "finding_type" if self.request.GET.get("order_by", "") == "finding_type" else "score"
+
+    @property
+    def sorting_order(self) -> Literal["asc", "desc"]:
+        return "asc" if self.request.GET.get("sorting_order", "") == "asc" else "desc"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["observed_at_form"] = self.get_connector_form()
+        context["observed_at"] = self.observed_at
+        context["severity_filter"] = FindingSeverityMultiSelectForm({"severity": list(self.severities)})
+        context["muted_findings_filter"] = MutedFindingSelectionForm({"muted_findings": self.muted_findings})
+        context["finding_search_form"] = FindingSearchForm(self.request.GET)
+        context["only_muted"] = self.only_muted
+        context["active_filters_counter"] = self.count_active_filters()
+        context["order_by"] = self.order_by
+        context["order_by_severity_form"] = OrderBySeverityForm(self.request.GET)
+        context["order_by_finding_type_form"] = OrderByFindingTypeForm(self.request.GET)
+        context["sorting_order"] = self.sorting_order
+        context["sorting_order_class"] = "ascending" if self.sorting_order == "asc" else "descending"
+        return context
+
+
+class FindingListView(BreadcrumbsMixin, FindingListFilter):
     template_name = "findings/finding_list.html"
-    ooi_types = {Finding}
-    paginate_by = 50
+    paginate_by = 150
 
-    def get_queryset(self):
-        findings = super().get_queryset()
-        severity_filter = []
-
-        for severity in self.request.GET.getlist("severity"):
-            try:
-                severity_filter.append(RiskLevelSeverity(severity))
-            except ValueError as e:
-                messages.error(self.request, _(str(e)))
-
-        return generate_findings_metadata(findings, severity_filter)
-
-    def build_breadcrumbs(self):
+    def build_breadcrumbs(self) -> list[Breadcrumb]:
         return [
             {
                 "url": reverse_lazy("finding_list", kwargs={"organization_code": self.organization.code}),
@@ -66,12 +128,9 @@ class FindingListView(BreadcrumbsMixin, BaseOOIListView, OrganizationView):
 
 class Top10FindingListView(FindingListView):
     template_name = "findings/finding_list.html"
-    ooi_types = {Finding}
+    paginate_by = 10
 
-    def get_queryset(self):
-        return super().get_queryset()[:10]
-
-    def build_breadcrumbs(self):
+    def build_breadcrumbs(self) -> list[Breadcrumb]:
         return [
             {
                 "url": reverse_lazy("organization_crisis_room", kwargs={"organization_code": self.organization.code}),

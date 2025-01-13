@@ -6,12 +6,10 @@ MAKEFLAGS += --warn-undefined-variables
 MAKEFLAGS += --no-builtin-rules
 # Makefile Reference: https://tech.davis-hansson.com/p/make/
 
-.PHONY: help mypy check black done lint env debian ubuntu clean
+.PHONY: all help mypy check black done lint env debian ubuntu clean itest utest test migrations HIDE
 
 # use HIDE to run commands invisibly, unless VERBOSE defined
 HIDE:=$(if $(VERBOSE),,@)
-
-BYTES_VERSION= v0.6.0
 
 # Export cmd line args:
 export VERBOSE
@@ -23,7 +21,7 @@ export file
 export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
 
-ci-docker-compose := docker-compose -f base.yml  -f .ci/docker-compose.yml
+ci-docker-compose := docker compose --project-directory . -f .ci/docker-compose.yml
 
 ##
 ##+------------------------------------------------------------------------+
@@ -43,19 +41,19 @@ check: ## Check the code style using black, mypy and pylint.
 	make pylint
 
 mypy: ## Check code style using mypy.
-	$(ci-docker-compose) run --rm mula \
+	docker compose run --rm scheduler \
 		python -m mypy --cache-dir /home/scheduler/.mypy_cache /app/scheduler/scheduler
 
 black: ## Check code style with black.
-	$(ci-docker-compose) run --rm mula \
+	docker compose run --rm scheduler \
 		black --check --diff .
 
 pylint: ## Rate the code with pylint.
-	$(ci-docker-compose) run --rm mula \
+	$(ci-docker-compose) run --rm ci_scheduler_unit \
 		pylint --rcfile pyproject.toml scheduler
 
 fmt: ## Format the code using black.
-	$(ci-docker-compose) run --rm mula \
+	docker compose run --rm scheduler \
 		black .
 
 done: ## Prepare for a commit.
@@ -64,7 +62,7 @@ done: ## Prepare for a commit.
 	make test
 
 cov: ## Generate a test coverage report
-	$(ci-docker-compose) run --rm mula \
+	$(ci-docker-compose) run --rm ci_scheduler_integration \
 		python -m pytest \
 		--cov-report term-missing:skip-covered \
 		--cov=scheduler tests/
@@ -75,8 +73,8 @@ cov: ## Generate a test coverage report
 ##+------------------------------------------------------------------------+
 
 sql: ## Generate raw sql for the migrations.
-	docker-compose exec scheduler \
-		alembic --config /app/scheduler/alembic.ini \
+	docker compose run --rm scheduler \
+		alembic --config /app/scheduler/scheduler/storage/migrations/alembic.ini \
 		upgrade $(rev1):$(rev2) --sql
 
 migrations: ## Create migration.
@@ -85,15 +83,15 @@ ifeq ($(m),)
 else ifeq ($(revid),)
 	$(HIDE) (echo "ERROR: Specify a message with m={message} and a rev-id with revid={revid} (e.g. 0001 etc.)"; exit 1)
 else
-	docker-compose run scheduler \
-		alembic --config /app/scheduler/scheduler/alembic.ini \
+	docker compose run --rm scheduler \
+		alembic --config /app/scheduler/scheduler/storage/migrations/alembic.ini \
 		revision --autogenerate \
 		-m "$(m)" --rev-id "$(revid)"
 endif
 
 migrate: ## Run migrations using alembic.
-	docker-compose run scheduler \
-		alembic --config /app/scheduler/scheduler/alembic.ini \
+	docker compose run scheduler \
+		alembic --config /app/scheduler/scheduler/storage/migrations/alembic.ini \
 		upgrade head
 
 ##
@@ -103,22 +101,18 @@ migrate: ## Run migrations using alembic.
 
 utest: ## Run the unit tests.
 ifneq ($(file),)
-	$(ci-docker-compose) run --rm mula python -m pytest tests/unit/${file} ${function}
+	$(ci-docker-compose) run --rm ci_scheduler_unit python -m pytest -v tests/unit/${file} $(if $(function),-k $(function))
 else
-	$(ci-docker-compose) run --rm mula python -m pytest tests/unit
+	$(ci-docker-compose) run --rm ci_scheduler_unit python -m pytest -v tests/unit
 endif
 	$(ci-docker-compose) down --remove-orphans
 
 itest: ## Run the integration tests.
 ifneq ($(file),)
-	$(ci-docker-compose) run --rm mula python -m pytest tests/integration/${file} ${function}
+	$(ci-docker-compose) run --rm ci_scheduler_integration python -m pytest -v tests/integration/${file} $(if $(function),-k $(function))
 else
-	$(ci-docker-compose) run --rm mula python -m pytest tests/integration
+	$(ci-docker-compose) run --rm ci_scheduler_integration python -m pytest -v tests/integration
 endif
-	$(ci-docker-compose) down --remove-orphans
-
-stest: ## Run the simulation tests.
-	$(ci-docker-compose) run --rm mula python -m pytest tests/simulation
 	$(ci-docker-compose) down --remove-orphans
 
 test: ## Run all tests.
@@ -129,7 +123,7 @@ test: ## Run all tests.
 ##+------------------------------------------------------------------------+
 ##| Building                                                               |
 ##+------------------------------------------------------------------------+
-debian: ## debian
+debian12:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-mula \
@@ -139,10 +133,10 @@ debian: ## debian
 	--env RELEASE_TAG=${RELEASE_TAG} \
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--workdir /app \
-	kat-debian-build-image \
+	kat-debian12-build-image \
 	packaging/scripts/build-debian-package.sh
 
-ubuntu: ## ubuntu
+ubuntu22.04:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-mula \

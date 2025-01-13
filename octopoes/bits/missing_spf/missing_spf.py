@@ -1,32 +1,29 @@
-from typing import Iterator, List
-
-from octopoes.models import OOI
-from octopoes.models.ooi.dns.zone import Hostname
-from octopoes.models.ooi.email_security import DNSSPFRecord
+from collections.abc import Iterator
+from typing import Any
 
 import tldextract
 
-from octopoes.models.ooi.findings import KATFindingType, Finding
+from octopoes.models import OOI
+from octopoes.models.ooi.dns.records import NXDOMAIN
+from octopoes.models.ooi.dns.zone import Hostname
+from octopoes.models.ooi.email_security import DNSSPFRecord
+from octopoes.models.ooi.findings import Finding, KATFindingType
 
 
-def run(
-    input_ooi: Hostname,
-    additional_oois: List[DNSSPFRecord],
-) -> Iterator[OOI]:
-    # Only needs SPF when it is the fqdn and not a subdomain
+def run(input_ooi: Hostname, additional_oois: list[DNSSPFRecord | NXDOMAIN], config: dict[str, Any]) -> Iterator[OOI]:
+    spf_records = [ooi for ooi in additional_oois if isinstance(ooi, DNSSPFRecord)]
+    nxdomains = (ooi for ooi in additional_oois if isinstance(ooi, NXDOMAIN))
+
+    if any(nxdomains):
+        return
+    # only report finding when there is no SPF record
     if (
-        # only report on findings on the fqdn because of double findings
-        input_ooi.name == input_ooi.fqdn.tokenized.name
-        # don't report on findings on subdomains because it's not needed on subdomains
-        and not tldextract.extract(input_ooi.name).subdomain
-        # don't report on findings on tlds
+        not tldextract.extract(input_ooi.name).subdomain
         and tldextract.extract(input_ooi.name).domain
+        and not spf_records
     ):
-        if not additional_oois:
-            ft = KATFindingType(id="KAT-NO-SPF")
-            yield ft
-            yield Finding(
-                ooi=input_ooi.reference,
-                finding_type=ft.reference,
-                description="This hostname does not have an SPF record",
-            )
+        ft = KATFindingType(id="KAT-NO-SPF")
+        yield ft
+        yield Finding(
+            ooi=input_ooi.reference, finding_type=ft.reference, description="This hostname does not have an SPF record"
+        )

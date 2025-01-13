@@ -1,14 +1,13 @@
-from typing import List, Iterator, Union
+from collections.abc import Iterator
+from typing import Any
+
 from octopoes.models import OOI
-from octopoes.models.ooi.findings import KATFindingType, Finding
-from octopoes.models.ooi.network import IPPort, IPAddress
+from octopoes.models.ooi.findings import Finding, KATFindingType
+from octopoes.models.ooi.network import IPAddress, IPPort
 from octopoes.models.ooi.web import Website
 
 
-def run(
-    input_ooi: IPAddress,
-    additional_oois: List[Union[IPPort, Website]],
-) -> Iterator[OOI]:
+def run(input_ooi: IPAddress, additional_oois: list[IPPort | Website], config: dict[str, Any]) -> Iterator[OOI]:
     websites = [website for website in additional_oois if isinstance(website, Website)]
 
     open_ports = [port.port for port in additional_oois if isinstance(port, IPPort)]

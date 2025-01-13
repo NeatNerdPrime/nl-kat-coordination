@@ -1,13 +1,15 @@
 {
-    "id": "kat_dicom_normalize",
-    "consumes": [
-        "dicom"
-    ],
-    "produces": [
-        "KATFindingType",
-        "SoftwareInstance",
-        "IPPort",
-        "Finding",
-        "Software"
-    ]
+  "id": "kat_dicom_normalize",
+  "name": "DICOM servers",
+  "description": "Parses medical imaging data (DICOM) into findings and identified software.",
+  "consumes": [
+    "boefje/dicom"
+  ],
+  "produces": [
+    "KATFindingType",
+    "SoftwareInstance",
+    "IPPort",
+    "Finding",
+    "Software"
+  ]
 }

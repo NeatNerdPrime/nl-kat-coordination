@@ -1,14 +1,12 @@
 import re
-from typing import Set, Optional, Iterator, List
+from collections.abc import Iterable, Mapping
+from typing import Any
 
-from octopoes.config.settings import XTDBType
-from octopoes.xtdb.related_field_generator import (
-    RelatedFieldNode,
-    FieldSet,
-)
+from octopoes.xtdb import FieldSet
+from octopoes.xtdb.related_field_generator import RelatedFieldNode
 
 
-def join_csv(values: Iterator[any]) -> str:
+def join_csv(values: Iterable[Any]) -> str:
     return " ".join(values)
 
 
@@ -20,14 +18,13 @@ def str_val(val):
 
 
 def generate_pull_query(
-    xtdb_type: XTDBType,
-    field_set: Optional[FieldSet] = FieldSet.ALL_FIELDS,
-    where: Optional[dict] = None,
-    offset: Optional[int] = None,
-    limit: Optional[int] = None,
-    field_node: Optional[RelatedFieldNode] = None,
+    field_set: FieldSet = FieldSet.ALL_FIELDS,
+    where: Mapping[str, str | int | list[str] | list[int] | set[str] | set[int]] | None = None,
+    offset: int | None = None,
+    limit: int | None = None,
+    field_node: RelatedFieldNode | None = None,
 ) -> str:
-    pk_prefix = ":crux.db/id" if xtdb_type == XTDBType.CRUX else ":xt/id"
+    pk_prefix = ":xt/id"
 
     in_params = []
     in_args = []
@@ -38,7 +35,7 @@ def generate_pull_query(
     # Break where clause in relevant sections
     for key, value in where.items():
         var_name = re.sub("[^0-9a-zA-Z]+", "_", key)
-        if isinstance(value, (List, Set)):
+        if isinstance(value, list | set):
             value = sorted([str_val(value) for value in value])
             _csv = join_csv(value)
             in_args.append(f"[{_csv}]")

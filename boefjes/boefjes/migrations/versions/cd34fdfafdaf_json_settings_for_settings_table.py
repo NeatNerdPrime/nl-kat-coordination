@@ -5,15 +5,16 @@ Revises: 197672984df0
 Create Date: 2023-02-16 14:47:20.424959
 
 """
+
 import json
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import sessionmaker
 
+from boefjes.sql.config_storage import create_encrypter
 from boefjes.sql.db import get_engine
-from boefjes.sql.setting_storage import create_encrypter
 
 # revision identifiers, used by Alembic.
 revision = "cd34fdfafdaf"
@@ -41,7 +42,7 @@ def upgrade() -> None:
     # ### end Alembic commands ###
 
 
-def upgrade_encrypted_settings(conn: Connection):
+def upgrade_encrypted_settings(conn: Connection) -> None:
     encrypter = create_encrypter()
 
     with conn.begin():
@@ -62,8 +63,8 @@ def upgrade_encrypted_settings(conn: Connection):
         # Seed the encrypted original data into the new table
         for result in results:
             conn.execute(
-                f"INSERT INTO settings (values, plugin_id, organisation_pk) "
-                f"VALUES ('{result[0]}', '{result[1]}', {result[2]})"
+                "INSERT INTO settings (values, plugin_id, organisation_pk) VALUES (%s, %s, %s)",
+                [result[0], result[1], result[2]],
             )
 
 
@@ -89,7 +90,7 @@ def downgrade() -> None:
     # ### end Alembic commands ###
 
 
-def downgrade_encrypted_settings(conn: Connection):
+def downgrade_encrypted_settings(conn: Connection) -> None:
     encrypter = create_encrypter()
 
     with conn.begin():
@@ -104,8 +105,8 @@ def downgrade_encrypted_settings(conn: Connection):
 
         for result in results:
             conn.execute(
-                f"INSERT INTO setting (key, value, plugin_id, organisation_pk) "
-                f"VALUES ('{result[0]}', '{result[1]}', '{result[2]}', {result[3]})"
+                "INSERT INTO setting (key, value, plugin_id, organisation_pk) VALUES (%s, %s, %s, %s)",
+                [result[0], result[1], result[2], result[3]],
             )
 
 

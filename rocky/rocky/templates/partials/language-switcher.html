@@ -1,15 +1,38 @@
 {% load i18n %}
 
-{% get_current_language as LANGUAGE_CODE %}
-<div class="language">
-  <form action="{% url 'set_language' %}" method="post">
-    {% csrf_token %}
-    <div class="horizontal-view">
-      {% for language in languages %}
-        <button type="submit" name="language" value={{ language }} {% if LANGUAGE_CODE == language %}aria-current="true"{% endif %}>
-          {{ language|upper }}
+{% get_language_info for LANGUAGE_CODE as lang %}
+<div class="language-selector">
+    <div class="dropdown">
+        <button type="button"
+                aria-controls="language-switcher"
+                aria-expanded="false"
+                class="dropdown-button ghost">
+            {{ lang.name_local|title }}
+            <span aria-hidden="true" class="icon ti-chevron-down"></span>
         </button>
-      {% endfor %}
+        <ul id="language-switcher" role="listbox" class="dropdown-list">
+            {% for language in languages %}
+                {% get_language_info for language as lang %}
+                {% if LANGUAGE_CODE != language %}
+                    <li>
+                        <a hreflang="{{ language }}"
+                           href="#"
+                           role="option"
+                           data-value="{{ language }}"
+                           lang="{{ language }}">
+                            <button form="set-language" type="submit" name="language" value={{ language }}>
+                                {{ lang.name_local.title }}
+                            </button>
+                        </a>
+                    </li>
+                {% endif %}
+            {% endfor %}
+        </ul>
     </div>
-  </form>
+    <form id="set-language"
+          action="{% url "set_language" %}"
+          method="post"
+          class="inline">
+        {% csrf_token %}
+    </form>
 </div>

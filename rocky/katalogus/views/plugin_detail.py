@@ -1,88 +1,101 @@
-from datetime import datetime
-from logging import getLogger
-
-from django.core.paginator import Paginator, Page
-from django.http import FileResponse
-from django.urls.base import reverse
-from django.utils.translation import gettext_lazy as _
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
+from datetime import datetime, timezone
+from typing import Any
 
 from account.mixins import OrganizationView
-from katalogus.client import get_katalogus
-from katalogus.views import PluginSettingsListView
-from katalogus.views.mixins import KATalogusMixin
-from katalogus.views.plugin_detail_scan_oois import PluginDetailScanOOI
-from rocky import scheduler
+from django.contrib import messages
+from django.http import FileResponse
+from django.shortcuts import redirect
+from django.urls.base import reverse
+from django.utils.translation import gettext_lazy as _
+from tools.forms.ooi import SelectOOIFilterForm, SelectOOIForm
 
-logger = getLogger(__name__)
+from katalogus.client import Boefje, Normalizer
+from katalogus.views.plugin_settings_list import PluginSettingsListView
+from octopoes.models import OOI
+from rocky.scheduler import ScheduleResponse
+from rocky.views.tasks import TaskListView
 
 
 class PluginCoverImgView(OrganizationView):
     """Get the cover image of a plugin."""
 
     def get(self, request, *args, **kwargs):
-        file = FileResponse(get_katalogus(self.organization.code).get_cover(kwargs["plugin_id"]))
+        file = FileResponse(self.get_katalogus().get_cover(kwargs["plugin_id"]))
         file.headers["Cache-Control"] = "max-age=604800"
         return file
 
 
-@class_view_decorator(otp_required)
-class PluginDetailView(
-    KATalogusMixin,
-    PluginSettingsListView,
-    PluginDetailScanOOI,
-):
-    """Detail view for a specific plugin. Shows plugin settings and consumable oois for scanning."""
+class PluginDetailView(TaskListView, PluginSettingsListView):
+    def post(self, request, *args, **kwargs):
+        if self.action == self.SCAN_OOIS:
+            selected_oois = request.POST.getlist("ooi", [])
 
-    template_name = "plugin_detail.html"
-    scan_history_limit = 10
+            if selected_oois and self.plugin.id:
+                oois = self.get_oois(selected_oois)
+                boefje = self.katalogus_client.get_plugin(self.plugin.id)
 
-    def get_scan_history(self) -> Page:
-        scheduler_id = f"{self.plugin['type']}-{self.organization.code}"
+                oois_with_clearance_level = oois["oois_with_clearance"]
+                oois_without_clearance_level = oois["oois_without_clearance"]
 
-        filters = [
-            {
-                "field": f"data__{self.plugin['type']}__id",
-                "operator": "eq",
-                "value": self.plugin_id,
-            }
-        ]
+                if oois_with_clearance_level:
+                    self.run_boefje_for_oois(boefje=boefje, oois=oois_with_clearance_level)
 
-        if self.request.GET.get("scan_history_search"):
-            filters.append(
-                {
-                    "field": "data__input_ooi",
-                    "operator": "eq",
-                    "value": self.request.GET.get("scan_history_search"),
-                }
-            )
+                if oois_without_clearance_level:
+                    if not self.organization_member.has_perm("tools.can_set_clearance_level"):
+                        messages.error(
+                            request,
+                            _(
+                                "Some selected OOIs needs an increase of clearance level to perform scans."
+                                " You do not have the permission to change clearance level."
+                            ),
+                        )
+                    else:
+                        request.session["selected_oois"] = oois_without_clearance_level
+                        return redirect(
+                            reverse(
+                                "change_clearance_level",
+                                kwargs={
+                                    "plugin_type": "boefje",
+                                    "organization_code": self.organization.code,
+                                    "plugin_id": self.plugin.id,
+                                    "scan_level": self.plugin.scan_level.value,
+                                },
+                            )
+                        )
+        return super().post(request, *args, **kwargs)
 
-        page = int(self.request.GET.get("scan_history_page", 1))
+    def get_task_filters(self) -> dict[str, str | datetime | None]:
+        filters = super().get_task_filters()
+        filters["plugin_id"] = self.plugin.id  # fetch only tasks for a specific plugin by id
+        return filters
 
-        status = self.request.GET.get("scan_history_status")
+    def get_oois(self, selected_oois: list[str]) -> dict[str, Any]:
+        oois_with_clearance = []
+        oois_without_clearance = []
+        for ooi in selected_oois:
+            ooi_object = self.get_single_ooi(pk=ooi)
 
-        min_created_at = None
-        if self.request.GET.get("scan_history_from"):
-            min_created_at = datetime.strptime(self.request.GET.get("scan_history_from"), "%Y-%m-%d")
+            if ooi_object.scan_profile and ooi_object.scan_profile.level >= self.plugin.scan_level.value:
+                oois_with_clearance.append(ooi_object)
+            else:
+                oois_without_clearance.append(ooi_object.primary_key)
 
-        max_created_at = None
-        if self.request.GET.get("scan_history_to"):
-            max_created_at = datetime.strptime(self.request.GET.get("scan_history_to"), "%Y-%m-%d")
-
-        scan_history = scheduler.client.get_lazy_task_list(
-            scheduler_id=scheduler_id,
-            status=status,
-            min_created_at=min_created_at,
-            max_created_at=max_created_at,
-            filters=filters,
-        )
-
-        return Paginator(scan_history, self.scan_history_limit).page(page)
+        return {"oois_with_clearance": oois_with_clearance, "oois_without_clearance": oois_without_clearance}
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["plugin"] = self.plugin
+        context["plugin"] = self.plugin.model_dump()
+        context["plugin_settings"] = self.get_plugin_settings()
+        return context
+
+
+class NormalizerDetailView(PluginDetailView):
+    template_name = "normalizer_detail.html"
+    plugin: Normalizer
+    task_type = "normalizer"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
         context["breadcrumbs"] = [
             {
                 "url": reverse("katalogus", kwargs={"organization_code": self.organization.code}),
@@ -90,24 +103,83 @@ class PluginDetailView(
             },
             {
                 "url": reverse(
-                    "plugin_detail",
-                    kwargs={
-                        "organization_code": self.organization.code,
-                        "plugin_type": self.plugin["type"],
-                        "plugin_id": self.plugin_id,
-                    },
+                    "normalizer_detail",
+                    kwargs={"organization_code": self.organization.code, "plugin_id": self.plugin.id},
                 ),
-                "text": self.plugin["name"],
+                "text": self.plugin.name,
             },
         ]
 
-        context["scan_history"] = self.get_scan_history()
-        context["scan_history_form_fields"] = [
-            "scan_history_from",
-            "scan_history_to",
-            "scan_history_status",
-            "scan_history_search",
-            "scan_history_page",
+        return context
+
+
+class BoefjeDetailView(PluginDetailView):
+    """Detail view for a specific boefje. Shows boefje settings and consumable oois for scanning."""
+
+    template_name = "boefje_detail.html"
+    limit_ooi_list = 9999
+    plugin: Boefje
+    task_type = "boefje"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["new_variant"] = self.request.GET.get("new_variant")
+        context["variants"] = self.get_katalogus().get_plugins(oci_image=self.plugin.oci_image)
+
+        for variant in context["variants"]:
+            if variant.created:
+                variant.created = datetime.fromisoformat(variant.created)
+
+        context["select_ooi_filter_form"] = SelectOOIFilterForm
+        if "show_all" in self.request.GET:
+            context["select_oois_form"] = SelectOOIForm(
+                oois=self.get_form_consumable_oois(), organization_code=self.organization.code
+            )
+        else:
+            context["select_oois_form"] = SelectOOIForm(
+                oois=self.get_form_filtered_consumable_oois(), organization_code=self.organization.code
+            )
+
+        context["breadcrumbs"] = [
+            {
+                "url": reverse("katalogus", kwargs={"organization_code": self.organization.code}),
+                "text": _("KAT-alogus"),
+            },
+            {
+                "url": reverse(
+                    "boefje_detail", kwargs={"organization_code": self.organization.code, "plugin_id": self.plugin.id}
+                ),
+                "text": self.plugin.name,
+            },
         ]
 
         return context
+
+    def get_form_consumable_oois(self):
+        """Get all available OOIS that plugin can consume."""
+        oois = self.octopoes_api_connector.list_objects(
+            self.plugin.consumes, valid_time=datetime.now(timezone.utc), limit=self.limit_ooi_list
+        ).items
+
+        oois_with_schedule: list[tuple[OOI, ScheduleResponse]] = []
+
+        for ooi in oois:
+            schedules = self.scheduler_client.post_schedule_search(
+                {
+                    "filters": [
+                        {"column": "data", "field": "boefje__id", "operator": "eq", "value": self.plugin.id},
+                        {"column": "data", "field": "input_ooi", "operator": "eq", "value": ooi.primary_key},
+                    ]
+                }
+            )
+
+            if schedules.count > 0:
+                schedule: ScheduleResponse = schedules.results[0]
+
+                oois_with_schedule.append((ooi, schedule))
+        return oois_with_schedule
+
+    def get_form_filtered_consumable_oois(self):
+        """Return a list of oois that is filtered for oois that meets clearance level."""
+        oois_with_schedule = self.get_form_consumable_oois()
+        return [ooi for ooi in oois_with_schedule if ooi[0].scan_profile.level >= self.plugin.scan_level.value]

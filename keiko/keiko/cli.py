@@ -1,4 +1,5 @@
 """Keiko CLI module."""
+
 import uuid
 from typing import TextIO
 
@@ -12,9 +13,7 @@ from keiko.settings import Settings
 
 @click.command()
 @click.argument("sample", type=click.File("r"))
-def main(
-    sample: TextIO,
-) -> None:
+def main(sample: TextIO) -> None:
     """
     Click entry point.
 
@@ -23,7 +22,7 @@ def main(
     settings = Settings()
     setup_loggers(settings)
 
-    report_arguments = ReportArgumentsBase.parse_raw(sample.read())
+    report_arguments = ReportArgumentsBase.model_validate_json(sample.read())
     id_ = uuid.uuid4().hex[:8]
     generate_report(
         report_arguments.template,
@@ -34,7 +33,7 @@ def main(
         settings,
     )
 
-    print(f"Report generated with id {id_}")
+    click.echo(f"Report generated with id {id_}")
 
 
 if __name__ == "__main__":

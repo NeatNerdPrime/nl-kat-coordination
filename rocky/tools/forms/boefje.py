@@ -1,76 +1,60 @@
-from typing import Dict, List, Union, Any
-
 from django import forms
-from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
-from katalogus.client import Plugin
-from tools.forms.settings import Choice
-from tools.forms.base import BaseRockyForm, CheckboxGroup, Choices, ChoicesGroups
-from tools.models import Organization
+from octopoes.models.types import ALL_TYPES
+from tools.enums import SCAN_LEVEL
+from tools.forms.base import BaseRockyForm
+from tools.forms.settings import (
+    BOEFJE_CONSUMES_HELP_TEXT,
+    BOEFJE_CONTAINER_IMAGE_HELP_TEXT,
+    BOEFJE_DESCRIPTION_HELP_TEXT,
+    BOEFJE_PRODUCES_HELP_TEXT,
+    BOEFJE_SCAN_LEVEL_HELP_TEXT,
+    BOEFJE_SCHEMA_HELP_TEXT,
+)
+
+OOI_TYPE_CHOICES = sorted((ooi_type.get_object_type(), ooi_type.get_object_type()) for ooi_type in ALL_TYPES)
 
 
-class CheckboxGroupBoefjeTiles(CheckboxGroup):
-    template_name = "forms/widgets/checkbox_group_boefje_tiles.html"
-    option_template_name = "partials/boefje_tile_option.html"
-    wrap_label = False
-
-    def __init__(self):
-        super().__init__()
-        self.boefjes: List[Plugin] = self.attrs.get("boefjes", [])
-        self.organization = self.attrs.get(
-            "organization",
-        )
-
-    def create_option(self, *arg, **kwargs) -> Dict[str, Any]:
-        option = super().create_option(*arg, **kwargs)
-        option["boefje"] = [boefje for boefje in self.boefjes if boefje["id"] == option["value"]][0]
-        return option
-
-    def get_context(self, name, value, attrs):
-        context = super().get_context(name, value, attrs)
-        context["organization"] = self.organization
-        return context
-
-
-class SelectBoefjeForm(BaseRockyForm):
-    boefje = forms.MultipleChoiceField(
-        label=_("Boefjes"),
-        widget=CheckboxGroupBoefjeTiles(),
+class BoefjeSetupForm(BaseRockyForm):
+    oci_image = forms.CharField(required=True, label=_("Container image"), help_text=BOEFJE_CONTAINER_IMAGE_HELP_TEXT)
+    name = forms.CharField(required=True, label=_("Name"))
+    description = forms.CharField(
+        required=False,
+        label=_("Description"),
+        widget=forms.Textarea(attrs={"rows": 3}),
+        help_text=BOEFJE_DESCRIPTION_HELP_TEXT,
     )
-
-    def __init__(
-        self,
-        boefjes: List[Plugin],
-        organization: Organization,
-        *args,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self.boefjes = boefjes
-        self.organization = organization
-        self._build_form()
-
-    def clean(self):
-        data = self.cleaned_data["boefje"]
-
-        for boefje in self.boefjes:
-            if boefje["required"] and boefje["id"] not in data:
-                raise ValidationError(_("Not all required boefjes are selected. Please select all required boefjes."))
-
-        return data
-
-    def _build_form(self) -> None:
-        self.set_choices_for_field("boefje", self._get_choices(self.boefjes))
-        self.set_required_options_for_widget(
-            "boefje",
-            [item["id"] for item in self.boefjes if item.get("required", False)],
-        )
-        self.fields["boefje"].widget.boefjes = self.boefjes
-        self.fields["boefje"].widget.organization = self.organization
-
-    def _get_choices(self, boefjes: List[Plugin]) -> Union[Choices, ChoicesGroups]:
-        return [("Boefje", [self._choice_from_boefje(item["boefje"]) for item in boefjes])]
-
-    def _choice_from_boefje(self, boefje: Plugin) -> Choice:
-        return boefje.id, boefje.name
+    oci_arguments = forms.CharField(
+        required=False,
+        label=_("Arguments"),
+        widget=forms.TextInput(
+            attrs={"description": _("For example: -sTU --top-ports 1000"), "aria-describedby": "input-description"}
+        ),
+    )
+    boefje_schema = forms.JSONField(required=False, label=_("JSON Schema"), help_text=BOEFJE_SCHEMA_HELP_TEXT)
+    consumes = forms.CharField(
+        required=False,
+        label=_("Input object type"),
+        widget=forms.SelectMultiple(choices=OOI_TYPE_CHOICES),
+        help_text=BOEFJE_CONSUMES_HELP_TEXT,
+    )
+    produces = forms.CharField(required=False, label=_("Output mime types"), help_text=BOEFJE_PRODUCES_HELP_TEXT)
+    scan_level = forms.CharField(
+        required=False,
+        label=_("Clearance level"),
+        widget=forms.Select(choices=SCAN_LEVEL.choices),
+        help_text=BOEFJE_SCAN_LEVEL_HELP_TEXT,
+    )
+    interval = forms.CharField(
+        required=False,
+        label=_("Scan frequency"),
+        widget=forms.TextInput(
+            attrs={
+                "description": _(
+                    "Specify the scanning frequency for this Boefje in minutes. The default is 24 hours. "
+                    "For example: 5 minutes will let the boefje scan every 5 minutes."
+                )
+            }
+        ),
+    )

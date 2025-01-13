@@ -1,21 +1,10 @@
-"""Boefje script checking if dnssec has been correctly configured and is valid for given hostname"""
-import json
 import re
-from typing import Tuple, Union, List
-
-import docker
-
-from boefjes.config import settings
-from boefjes.job_models import BoefjeMeta
-
-DNSSEC_IMAGE = "noamblitz/drill:latest"
+import subprocess
 
 
-def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
-    input_ = boefje_meta.arguments["input"]
+def run(boefje_meta: dict) -> list[tuple[set, bytes | str]]:
+    input_ = boefje_meta["arguments"]["input"]
     domain = input_["name"]
-
-    client = docker.from_env()
 
     # check for string pollution in domain. This check will fail if anything other characters than a-zA-Z0-9_.- are
     # present in the hostname
@@ -25,22 +14,9 @@ def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
             "hostname?"
         )
 
-    container = client.containers.run(
-        DNSSEC_IMAGE,
-        [
-            "-S",
-            "-k",
-            "root.key",
-            f"{domain}",
-            f"@{settings.remote_ns}",
-        ],
-        detach=True,
-    )
+    cmd = ["/usr/bin/drill", "-DT", domain]
+    output = subprocess.run(cmd, capture_output=True)
 
-    # wait for container to exit, read its output in the logs and remove container
-    container.wait()
-    output = container.logs()
-    container.remove()
+    output.check_returncode()
 
-    results = json.dumps(output.decode())
-    return [(set(), results)]
+    return [({"openkat/dnssec-output"}, output.stdout)]

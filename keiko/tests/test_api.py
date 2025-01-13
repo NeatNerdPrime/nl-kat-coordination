@@ -1,9 +1,9 @@
 from pathlib import Path
+from tempfile import gettempdir
 from unittest import TestCase
 
 from fastapi.testclient import TestClient
 
-from tempfile import gettempdir
 from keiko.api import construct_api
 from keiko.settings import Settings
 
@@ -24,13 +24,7 @@ class APITest(TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertDictEqual(
-            {
-                "service": "keiko",
-                "healthy": True,
-                "version": "0.0.1.dev1",
-                "additional": None,
-                "results": [],
-            },
+            {"service": "keiko", "healthy": True, "version": "0.0.1.dev1", "additional": None, "results": []},
             response.json(),
         )
 

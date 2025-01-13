@@ -1,25 +1,26 @@
 import datetime
 import ipaddress
+import logging
 import re
-from typing import Union, Iterator, List, Tuple
+from collections.abc import Iterable
 
-import cryptography
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from dateutil.parser import parse
-import logging
-from boefjes.job_models import NormalizerMeta
-from octopoes.models import OOI, Reference
+
+from boefjes.job_models import NormalizerAffirmation, NormalizerOutput
+from octopoes.models import Reference
 from octopoes.models.ooi.certificate import (
-    X509Certificate,
     AlgorithmType,
+    SubjectAlternativeName,
     SubjectAlternativeNameHostname,
     SubjectAlternativeNameIP,
     SubjectAlternativeNameQualifier,
-    SubjectAlternativeName,
+    X509Certificate,
 )
 from octopoes.models.ooi.dns.zone import Hostname
-from octopoes.models.ooi.network import Network, IPAddressV4, IPAddressV6, IPPort, Protocol, PortState
+from octopoes.models.ooi.network import IPAddressV4, IPAddressV6, IPPort, Network, PortState, Protocol
 from octopoes.models.ooi.service import IPService, Service
 from octopoes.models.ooi.web import Website
 
@@ -33,23 +34,21 @@ def find_between(s: str, first: str, last: str) -> str:
         return ""
 
 
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     # only get the first part of certificates
     contents = find_between(raw.decode(), "Certificate chain", "Certificate chain")
 
     if not contents:
         return
 
-    input_ooi = normalizer_meta.raw_data.boefje_meta.input_ooi
+    pk = input_ooi["primary_key"]
 
     # extract all certificates
-    certificates, certificate_subject_alternative_names, hostnames = read_certificates(
-        contents, Reference.from_str(input_ooi)
-    )
+    certificates, certificate_subject_alternative_names, hostnames = read_certificates(contents, Reference.from_str(pk))
 
     # connect server certificate to website
     if certificates:
-        tokenized = Reference.from_str(input_ooi).tokenized
+        tokenized = Reference.from_str(pk).tokenized
         addr = ipaddress.ip_address(tokenized.ip_service.ip_port.address.address)
         network = Network(name=tokenized.ip_service.ip_port.address.network.name)
         if isinstance(addr, ipaddress.IPv4Address):
@@ -74,7 +73,7 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
         )
 
         # update website
-        yield website
+        yield NormalizerAffirmation(ooi=website)
 
     # chain certificates together
     last_certificate = None
@@ -94,20 +93,21 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
 
 def read_certificates(
     contents: str, website_reference: Reference
-) -> Tuple[List[X509Certificate], List[SubjectAlternativeName], List[Hostname]]:
+) -> tuple[list[X509Certificate], list[SubjectAlternativeName], list[Hostname]]:
     # iterate through the PEM certificates and decode them
     certificates = []
     certificate_subject_alternative_names = []
     hostnames = []
     for m in re.finditer(
-        r"(?<=-----BEGIN CERTIFICATE-----).*?(?=-----END CERTIFICATE-----)",
-        contents,
-        flags=re.DOTALL,
+        r"(?<=-----BEGIN CERTIFICATE-----).*?(?=-----END CERTIFICATE-----)", contents, flags=re.DOTALL
     ):
         pem_contents = f"-----BEGIN CERTIFICATE-----{m.group()}-----END CERTIFICATE-----"
 
         cert = x509.load_pem_x509_certificate(pem_contents.encode(), default_backend())
-        subject = cert.subject.get_attributes_for_oid(x509.OID_COMMON_NAME)[0].value
+        try:
+            subject = cert.subject.get_attributes_for_oid(x509.OID_COMMON_NAME)[0].value
+        except IndexError:
+            subject = None
         issuer = cert.issuer.get_attributes_for_oid(x509.OID_ORGANIZATION_NAME)[0].value
         try:
             subject_alternative_names = [
@@ -117,16 +117,12 @@ def read_certificates(
             subject_alternative_names = []
         valid_from = cert.not_valid_before.isoformat()
         valid_until = cert.not_valid_after.isoformat()
-        pk_algorithm = ""
         pk_size = cert.public_key().key_size
         logging.info("Parsing certificate of type %s", type(cert.public_key()))
-        if isinstance(
-            cert.public_key(),
-            cryptography.hazmat.backends.openssl.rsa.RSAPublicKey,
-        ):
+        if isinstance(cert.public_key(), rsa.RSAPublicKey):
             pk_algorithm = str(AlgorithmType.RSA)
             pk_number = cert.public_key().public_numbers().n.to_bytes(pk_size // 8, "big").hex()
-        elif isinstance(cert.public_key(), cryptography.hazmat.backends.openssl.ec._EllipticCurvePublicKey):
+        elif isinstance(cert.public_key(), ec.EllipticCurvePublicKey):
             pk_algorithm = str(AlgorithmType.ECC)
             pk_number = hex(cert.public_key().public_numbers().x) + hex(cert.public_key().public_numbers().y)
         else:

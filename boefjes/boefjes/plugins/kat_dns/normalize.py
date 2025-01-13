@@ -1,9 +1,10 @@
 import json
+import re
+from collections.abc import Iterable
 from ipaddress import IPv4Address, IPv6Address
-from typing import Iterator, Union, List, Dict
 
-from dns.message import from_text, Message
-from dns.rdata import Rdata
+from dns.message import Message, from_text
+from dns.rdtypes.ANY.CAA import CAA
 from dns.rdtypes.ANY.CNAME import CNAME
 from dns.rdtypes.ANY.MX import MX
 from dns.rdtypes.ANY.NS import NS
@@ -11,50 +12,48 @@ from dns.rdtypes.ANY.SOA import SOA
 from dns.rdtypes.ANY.TXT import TXT
 from dns.rdtypes.IN.A import A
 from dns.rdtypes.IN.AAAA import AAAA
-from octopoes.models import OOI, Reference
+
+from boefjes.job_models import NormalizerOutput
+from octopoes.models import Reference
 from octopoes.models.ooi.dns.records import (
-    DNSARecord,
+    NXDOMAIN,
     DNSAAAARecord,
-    DNSTXTRecord,
+    DNSARecord,
+    DNSCAARecord,
+    DNSCNAMERecord,
     DNSMXRecord,
     DNSNSRecord,
-    DNSSOARecord,
-    DNSCNAMERecord,
     DNSRecord,
-    NXDOMAIN,
+    DNSSOARecord,
+    DNSTXTRecord,
 )
-from octopoes.models.ooi.dns.zone import Hostname, DNSZone
-from octopoes.models.ooi.network import IPAddressV4, IPAddressV6, Network
+from octopoes.models.ooi.dns.zone import DNSZone, Hostname
 from octopoes.models.ooi.email_security import DKIMExists, DMARCTXTRecord
+from octopoes.models.ooi.network import IPAddressV4, IPAddressV6, Network
 
-from boefjes.job_models import NormalizerMeta
 
-
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     internet = Network(name="internet")
 
     if raw.decode() == "NXDOMAIN":
-        yield NXDOMAIN(hostname=Reference.from_str(normalizer_meta.raw_data.boefje_meta.input_ooi))
+        yield NXDOMAIN(hostname=Reference.from_str(input_ooi["primary_key"]))
         return
 
     results = json.loads(raw)
 
     # parse raw data into dns.response.Message
     sections = results["dns_records"].split("\n\n")
-    responses: List[Message] = []
+    responses: list[Message] = []
     for section in sections:
         lines = section.split("\n")
         responses.append(from_text("\n".join(lines[1:])))
 
     zone = None
-    hostname_store: Dict[str, Hostname] = {}
-    record_store: Dict[str, DNSRecord] = {}
+    hostname_store: dict[str, Hostname] = {}
+    record_store: dict[str, DNSRecord] = {}
 
     def register_hostname(name: str) -> Hostname:
-        hostname = Hostname(
-            network=internet.reference,
-            name=name,
-        )
+        hostname = Hostname(network=internet.reference, name=name.rstrip("."))
         hostname_store[hostname.name] = hostname
         return hostname
 
@@ -63,28 +62,20 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
         return record
 
     # register argument hostname
-    input_hostname = register_hostname(normalizer_meta.raw_data.boefje_meta.arguments["input"]["name"])
+    input_hostname = register_hostname(input_ooi["name"])
 
     # keep track of discovered zones
-    zone_links: Dict[str, DNSZone] = {}
+    zone_links: dict[str, DNSZone] = {}
 
     for response in responses:
         for rrset in response.answer:
             for rr in rrset:
-                rr: Rdata
-
                 record_hostname = register_hostname(str(rrset.name))
-                default_args = {
-                    "hostname": record_hostname.reference,
-                    "value": str(rr),
-                    "ttl": rrset.ttl,
-                }
+                default_args = {"hostname": record_hostname.reference, "value": str(rr), "ttl": rrset.ttl}
 
                 # the soa is the zone of itself, and the argument hostname
                 if isinstance(rr, SOA):
-                    zone = DNSZone(
-                        hostname=record_hostname.reference,
-                    )
+                    zone = DNSZone(hostname=record_hostname.reference)
                     zone_links[record_hostname.name] = zone
                     zone_links[input_hostname.name] = zone
 
@@ -107,12 +98,7 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
                 if isinstance(rr, AAAA):
                     ipv6 = IPAddressV6(network=internet.reference, address=IPv6Address(str(rr)))
                     yield ipv6
-                    register_record(
-                        DNSAAAARecord(
-                            address=ipv6.reference,
-                            **default_args,
-                        )
-                    )
+                    register_record(DNSAAAARecord(address=ipv6.reference, **default_args))
 
                 if isinstance(rr, TXT):
                     # TODO: concatenated txt records should be handled better
@@ -127,30 +113,23 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
                         mail_hostname_reference = mail_fqdn.reference
 
                     register_record(
-                        DNSMXRecord(
-                            mail_hostname=mail_hostname_reference,
-                            preference=rr.preference,
-                            **default_args,
-                        )
+                        DNSMXRecord(mail_hostname=mail_hostname_reference, preference=rr.preference, **default_args)
                     )
 
                 if isinstance(rr, NS):
                     ns_fqdn = register_hostname(str(rr.target))
-                    register_record(
-                        DNSNSRecord(
-                            name_server_hostname=ns_fqdn.reference,
-                            **default_args,
-                        )
-                    )
+                    register_record(DNSNSRecord(name_server_hostname=ns_fqdn.reference, **default_args))
 
                 if isinstance(rr, CNAME):
                     target_fqdn = register_hostname(str(rr.target))
-                    register_record(
-                        DNSCNAMERecord(
-                            target_hostname=target_fqdn.reference,
-                            **default_args,
-                        )
-                    )
+                    register_record(DNSCNAMERecord(target_hostname=target_fqdn.reference, **default_args))
+
+                if isinstance(rr, CAA):
+                    record_value = str(rr).split(" ", 2)
+                    default_args["flags"] = min(max(0, int(record_value[0])), 255)
+                    default_args["tag"] = re.sub("[^\\w]", "", record_value[1].lower())
+                    default_args["value"] = record_value[2]
+                    register_record(DNSCAARecord(**default_args))
 
     # link the hostnames to their discovered zones
     for hostname_, zone in zone_links.items():
@@ -163,21 +142,13 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
 
     # DKIM
     dkim_results = results["dkim_response"]
-    if dkim_results not in ["NXDOMAIN", "Timeout"]:
-        if "rcode NOERROR" == dkim_results.split("\n")[2]:
-            yield DKIMExists(
-                hostname=input_hostname.reference,
-            )
+    if dkim_results not in ["NXDOMAIN", "Timeout", "DNSSECFAIL"] and dkim_results.split("\n")[2] == "rcode NOERROR":
+        yield DKIMExists(hostname=input_hostname.reference)
 
     # DMARC
     dmarc_results = results["dmarc_response"]
     if dmarc_results not in ["NXDOMAIN", "Timeout"]:
         for rrset in from_text(dmarc_results).answer:
             for rr in rrset:
-                rr: Rdata
                 if isinstance(rr, TXT):
-                    yield DMARCTXTRecord(
-                        hostname=input_hostname.fqdn,
-                        value=str(rr).strip('"'),
-                        ttl=rrset.ttl,
-                    )
+                    yield DMARCTXTRecord(hostname=input_hostname.reference, value=str(rr).strip('"'), ttl=rrset.ttl)

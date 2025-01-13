@@ -1,52 +1,34 @@
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import datetime
 from enum import Enum
-from functools import total_ordering
-from typing import Dict, Optional, Any, Union, TypedDict, Tuple
+from typing import Any
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from pydantic import parse_obj_as
+from pydantic import TypeAdapter
 
 from octopoes.api.models import Declaration
 from octopoes.connector.octopoes import OctopoesAPIConnector
 from octopoes.models import OOI
 from octopoes.models.exception import ObjectNotFoundException
 from octopoes.models.ooi.findings import (
+    CAPECFindingType,
+    CVEFindingType,
+    CWEFindingType,
     Finding,
     FindingType,
     KATFindingType,
-    CVEFindingType,
-    CWEFindingType,
     RetireJSFindingType,
     SnykFindingType,
-    CAPECFindingType,
 )
 from octopoes.models.tree import ReferenceNode
-from octopoes.models.types import get_relations, OOI_TYPES
-
+from octopoes.models.types import OOI_TYPES, get_relations
 from rocky.bytes_client import BytesClient
 from tools.models import OOIInformation
 
 User = get_user_model()
 
 RISK_LEVEL_SCORE_DEFAULT = 10
-
-
-@total_ordering
-class RiskLevelSeverity(Enum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    NONE = "recommendation"
-
-    def __gt__(self, other: "RiskLevelSeverity") -> bool:
-        severity_order = ["recommendation", "low", "medium", "high", "critical"]
-
-        return severity_order.index(self.value) > severity_order.index(other.value)
-
-    def __str__(self):
-        return self.value
 
 
 def format_attr_name(s: str) -> str:
@@ -59,11 +41,14 @@ def format_value(value: Any) -> str:
     return value
 
 
-def format_display(data: Dict) -> Dict[str, str]:
-    return {format_attr_name(k): format_value(v) for k, v in data.items()}
+def format_display(data: dict, ignore: list | None = None) -> dict[str, str]:
+    if ignore is None:
+        ignore = []
+
+    return {format_attr_name(k): format_value(v) for k, v in data.items() if k not in ignore}
 
 
-def get_knowledge_base_data_for_ooi_store(ooi_store) -> Dict[str, Dict]:
+def get_knowledge_base_data_for_ooi_store(ooi_store: dict) -> dict[str, dict]:
     knowledge_base = {}
 
     for ooi in ooi_store.values():
@@ -74,7 +59,7 @@ def get_knowledge_base_data_for_ooi_store(ooi_store) -> Dict[str, Dict]:
     return knowledge_base
 
 
-def get_knowledge_base_data_for_ooi(ooi: OOI) -> Dict:
+def get_knowledge_base_data_for_ooi(ooi: OOI) -> dict:
     knowledge_base_data = {}
 
     # Knowledge base data
@@ -83,9 +68,6 @@ def get_knowledge_base_data_for_ooi(ooi: OOI) -> Dict:
         info, created = OOIInformation.objects.get_or_create(id=information_id)
         if info.description:
             knowledge_base_data.update(info.data)
-
-        if isinstance(ooi, FindingType):
-            knowledge_base_data.update(risk_level_calculate(ooi, info))
 
     try:
         info_on_type = OOIInformation.objects.get(id=ooi.get_ooi_type())
@@ -96,125 +78,16 @@ def get_knowledge_base_data_for_ooi(ooi: OOI) -> Dict:
     return knowledge_base_data
 
 
-class RiskLevelScore(TypedDict):
-    risk_level_source: Optional[Union[str, int, float]]
-    risk_level_score: Union[int, float]
-    risk_level_severity: str
-
-
-def risk_level_calculate(ooi: FindingType, ooi_info: OOIInformation) -> RiskLevelScore:
-    """
-    Returns risk source value, calculated score and severity for finding type
-    """
-
-    if isinstance(ooi, CVEFindingType):
-        return get_risk_level_score_for_cve(ooi_info.data)
-    if isinstance(ooi, RetireJSFindingType):
-        return get_risk_level_score_for_retirejs(ooi_info.data)
-    if isinstance(ooi, SnykFindingType):
-        return get_risk_level_score_for_snyk(ooi_info.data)
-
-    return get_risk_level_score(ooi_info.data)
-
-
-def get_risk_level_score_for_cve(data: Dict) -> RiskLevelScore:
-    source = data.get("source")
-    score = data.get("cvss", RISK_LEVEL_SCORE_DEFAULT) or RISK_LEVEL_SCORE_DEFAULT
-    return {
-        "risk_level_source": source,
-        "risk_level_score": score,
-        "risk_level_severity": risk_level_severity(score),
-    }
-
-
-def get_risk_level_score_for_retirejs(data: Dict) -> RiskLevelScore:
-    source = RiskLevelSeverity[data["severity"].upper()].value
-    score = risk_to_score(source or RISK_LEVEL_SCORE_DEFAULT)
-
-    return {
-        "risk_level_source": source,
-        "risk_level_score": score,
-        "risk_level_severity": risk_level_severity(score),
-    }
-
-
-def get_risk_level_score_for_snyk(data: Dict) -> RiskLevelScore:
-    score = risk_to_score(float(data["risk"]) or RISK_LEVEL_SCORE_DEFAULT)
-
-    return {
-        "risk_level_source": score,
-        "risk_level_score": score,
-        "risk_level_severity": risk_level_severity(score),
-    }
-
-
-def get_risk_level_score(data: Dict) -> RiskLevelScore:
-    source = data.get("risk")
-    score = risk_to_score(data.get("risk", RISK_LEVEL_SCORE_DEFAULT))
-
-    return {
-        "risk_level_source": source,
-        "risk_level_score": score,
-        "risk_level_severity": risk_level_severity(score),
-    }
-
-
-def risk_to_score(risk: Union[str, int, float]) -> Union[int, float]:
-    """
-    Returns risk score 0 - 10
-    Risk can be either string or number.
-    text to score mapping guideline: CVSS v3 https://nvd.nist.gov/vuln-metrics/cvss
-    """
-    text_to_score_dict = {
-        "critical": 10,
-        "high": 8.9,
-        "medium": 6.9,
-        "low": 3.9,
-        "very low": 0.0,
-        "recommendation": 0.0,
-        "middle": 6.9,
-    }
-
-    if isinstance(risk, (int, float)) and 0 <= risk <= 10:
-        return risk
-
-    if isinstance(risk, str) and risk.lower() in text_to_score_dict:
-        return text_to_score_dict[risk.lower()]
-
-    raise ValueError(f"Unknown risk level: {risk}")
-
-
-def risk_level_severity(score: float) -> str:
-    """
-    Returns severity string, based on 0 - 10 score
-    guideline: CVSS v3 https://nvd.nist.gov/vuln-metrics/cvss
-
-    If no score or score not in 0-10 scale, return severity: critical
-    """
-    if score == 0:
-        return RiskLevelSeverity.NONE.value
-    elif score < 4:
-        return RiskLevelSeverity.LOW.value
-    elif score < 7:
-        return RiskLevelSeverity.MEDIUM.value
-    elif score < 9:
-        return RiskLevelSeverity.HIGH.value
-    else:
-        return RiskLevelSeverity.CRITICAL.value
-
-
 def process_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, int | float):
+        return value
     return str(value) if value else None
 
 
-def get_ooi_dict(ooi: OOI) -> Dict:
-    ooi_dict = {
-        "id": ooi.primary_key,
-        "ooi_type": ooi.get_ooi_type(),
-        "human_readable": ooi.human_readable,
-    }
+def get_ooi_dict(ooi: OOI) -> dict:
+    ooi_dict = {"id": ooi.primary_key, "ooi_type": ooi.get_ooi_type(), "human_readable": ooi.human_readable}
 
     ignore_properties = ["primary_key", "scan_profile"]
 
@@ -227,8 +100,8 @@ def get_ooi_dict(ooi: OOI) -> Dict:
     return ooi_dict
 
 
-def get_tree_meta(tree_node: Dict, depth: int, location: str) -> Dict:
-    tree_meta = {
+def get_tree_meta(tree_node: dict, depth: int, location: str) -> dict:
+    tree_meta: dict[str, Any] = {
         "depth": depth,
         "location": location,
         "child_count": "0",  # TO_DO ? child_count doesn't exist in template if not a string
@@ -252,12 +125,12 @@ def get_tree_meta(tree_node: Dict, depth: int, location: str) -> Dict:
 
 def create_object_tree_item_from_ref(
     reference_node: ReferenceNode,
-    ooi_store: Dict[str, OOI],
-    knowledge_base: Optional[Dict[str, Dict]] = None,
-    depth=0,
-    position=1,
-    location="loc",
-) -> Dict:
+    ooi_store: dict[str, OOI],
+    knowledge_base: dict[str, dict] | None = None,
+    depth: int = 0,
+    position: int = 1,
+    location: str = "loc",
+) -> dict:
     depth = sum([depth, 1])
     location = location + "-" + str(position)
 
@@ -299,14 +172,13 @@ def get_ooi_types_from_tree(ooi, include_self=True):
         for child_type in get_ooi_types_from_tree(child):
             types.add(child_type)
 
-    if include_self:
-        if ooi["ooi_type"] not in types:
-            types.add(ooi["ooi_type"])
+    if include_self and ooi["ooi_type"] not in types:
+        types.add(ooi["ooi_type"])
 
     return sorted(types)
 
 
-def filter_ooi_tree(ooi_node: Dict, show_types=[], hide_types=[]) -> Dict:
+def filter_ooi_tree(ooi_node: dict, show_types: Sequence = [], hide_types: Sequence = []) -> dict:
     if not show_types and not hide_types:
         return ooi_node
 
@@ -347,52 +219,38 @@ def filter_ooi_tree_item(ooi_node, show_types, hide_types, self_excluded_from_fi
 
 
 def get_finding_type_from_finding(finding: Finding) -> FindingType:
-    return parse_obj_as(
-        Union[
-            KATFindingType,
-            CVEFindingType,
-            CWEFindingType,
-            RetireJSFindingType,
-            SnykFindingType,
-            CAPECFindingType,
-        ],
-        {
-            "object_type": finding.finding_type.class_,
-            "id": finding.finding_type.natural_key,
-        },
-    )
+    return TypeAdapter(
+        KATFindingType | CVEFindingType | CWEFindingType | RetireJSFindingType | SnykFindingType | CAPECFindingType
+    ).validate_python({"object_type": finding.finding_type.class_, "id": finding.finding_type.natural_key})
 
 
-_EXCLUDED = [Finding] + FindingType.__subclasses__()
+_EXCLUDED = [Finding] + FindingType.strict_subclasses()
 OOI_TYPES_WITHOUT_FINDINGS = [name for name, cls_ in OOI_TYPES.items() if cls_ not in _EXCLUDED]
 
 
 def get_or_create_ooi(
-    api_connector: OctopoesAPIConnector, bytes_client: BytesClient, ooi: OOI, observed_at: datetime = None
-) -> Tuple[OOI, Union[bool, datetime]]:
-    _now = datetime.now(timezone.utc)
-    if observed_at is None:
-        observed_at = _now
-
+    api_connector: OctopoesAPIConnector,
+    bytes_client: BytesClient,
+    ooi: OOI,
+    observed_at: datetime,
+    end_valid_time: datetime | None = None,
+) -> tuple[OOI, bool]:
     try:
         return api_connector.get(ooi.reference, observed_at), False
     except ObjectNotFoundException:
-        if observed_at < _now:
-            # don't create an OOI when expected valid_time is in the past
-            raise ValueError(f"OOI not found and unable to create at {observed_at}")
-
-        create_ooi(api_connector, bytes_client, ooi, observed_at)
-        return ooi, datetime.now(timezone.utc)
+        create_ooi(api_connector, bytes_client, ooi, observed_at, end_valid_time)
+        return ooi, True
 
 
 def create_ooi(
-    api_connector: OctopoesAPIConnector, bytes_client: BytesClient, ooi: OOI, observed_at: datetime = None
+    api_connector: OctopoesAPIConnector,
+    bytes_client: BytesClient,
+    ooi: OOI,
+    observed_at: datetime,
+    end_valid_time: datetime | None = None,
 ) -> None:
-    if observed_at is None:
-        observed_at = datetime.now(timezone.utc)
-
     task_id = uuid4()
-    declaration = Declaration(ooi=ooi, valid_time=observed_at, task_id=str(task_id))
+    declaration = Declaration(ooi=ooi, valid_time=observed_at, task_id=task_id, end_valid_time=end_valid_time)
     bytes_client.add_manual_proof(task_id, BytesClient.raw_from_declarations([declaration]))
 
     api_connector.save_declaration(declaration)

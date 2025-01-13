@@ -1,17 +1,9 @@
-from typing import Optional, Dict
-
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.management import BaseCommand
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from tools.models import (
-    GROUP_CLIENT,
-    GROUP_REDTEAM,
-    GROUP_ADMIN,
-    Organization,
-    OrganizationMember,
-)
+from tools.models import GROUP_ADMIN, GROUP_CLIENT, GROUP_REDTEAM, Organization, OrganizationMember
 
 User = get_user_model()
 
@@ -27,8 +19,8 @@ class Command(BaseCommand):
         add_test_user("e2e-client", password, GROUP_CLIENT)
 
 
-def add_superuser(email: str, password: str):
-    user_kwargs = {
+def add_superuser(email: str, password: str) -> None:
+    user_kwargs: dict[str, str | bool] = {
         "email": email,
         "password": password,
         "full_name": "End-to-end Superuser",
@@ -39,17 +31,13 @@ def add_superuser(email: str, password: str):
     add_user(user_kwargs)
 
 
-def add_test_user(email: str, password: str, group_name: Optional[str] = None):
-    user_kwargs = {
-        "email": email,
-        "password": password,
-        "full_name": "End-to-end user",
-    }
+def add_test_user(email: str, password: str, group_name: str | None = None) -> None:
+    user_kwargs: dict[str, str | bool] = {"email": email, "password": password, "full_name": "End-to-end user"}
 
     add_user(user_kwargs, group_name)
 
 
-def add_user(user_kwargs: Dict[str, str], group_name: Optional[str] = None):
+def add_user(user_kwargs: dict[str, str | bool], group_name: str | None = None) -> None:
     """
     Creates a test user with the given user_kwargs.
     User is optionally added to group group_name.
@@ -87,10 +75,7 @@ def add_user(user_kwargs: Dict[str, str], group_name: Optional[str] = None):
 
     organization, created = Organization.objects.get_or_create(code="_dev")
 
-    organizationmember, created = OrganizationMember.objects.get_or_create(
-        user=user,
-        organization=organization,
-    )
+    organizationmember, created = OrganizationMember.objects.get_or_create(user=user, organization=organization)
 
     if created:
         organizationmember.status = OrganizationMember.STATUSES.ACTIVE

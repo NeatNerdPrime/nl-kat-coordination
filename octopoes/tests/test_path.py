@@ -2,22 +2,24 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from octopoes.models.path import (
+    Direction,
     Path,
     Segment,
-    Direction,
-    incoming_step_grammar,
-    get_paths_to_neighours,
     get_max_scan_level_inheritance,
+    get_paths_to_neighours,
+    incoming_step_grammar,
 )
 from tests.mocks.mock_ooi_types import (
-    MockResolvedHostname,
+    ALL_OOI_TYPES,
+    MockDNSCNAMERecord,
+    MockDNSZone,
     MockHostname,
+    MockIPAddress,
     MockIPAddressV4,
     MockIPPort,
-    MockDNSCNAMERecord,
-    MockIPAddress,
-    ALL_OOI_TYPES,
-    MockDNSZone,
+    MockLabel,
+    MockNetwork,
+    MockResolvedHostname,
 )
 
 
@@ -26,19 +28,13 @@ class PathTest(TestCase):
     def test_path_outoing_relation(self):
         path = Path.parse("MockResolvedHostname.hostname")
         self.assertCountEqual(
-            [
-                Segment(MockResolvedHostname, Direction.OUTGOING, "hostname", MockHostname),
-            ],
-            path.segments,
+            [Segment(MockResolvedHostname, Direction.OUTGOING, "hostname", MockHostname)], path.segments
         )
 
     def test_path_incoming_relation(self):
         path = Path.parse("MockHostname.<hostname [is MockResolvedHostname]")
         self.assertCountEqual(
-            [
-                Segment(MockHostname, Direction.INCOMING, "hostname", MockResolvedHostname),
-            ],
-            path.segments,
+            [Segment(MockHostname, Direction.INCOMING, "hostname", MockResolvedHostname)], path.segments
         )
 
     def test_path_deeper(self):
@@ -64,33 +60,22 @@ class PathTest(TestCase):
     def test_path_reverse(self):
         path = Path.parse("MockIPAddress.<address [is MockIPPort]")
         reversed_path = path.reverse()
-        self.assertEqual(
-            Segment(MockIPPort, Direction.OUTGOING, "address", MockIPAddress),
-            reversed_path.segments[0],
-        )
+        self.assertEqual(Segment(MockIPPort, Direction.OUTGOING, "address", MockIPAddress), reversed_path.segments[0])
 
     def test_path_reverse_deep(self):
         path = Path.parse("MockDNSCNAMERecord.target_hostname.<hostname[is MockResolvedHostname].address")
         reversed_path = path.reverse()
 
         self.assertEqual(
-            Segment(
-                MockIPAddress,
-                Direction.INCOMING,
-                "address",
-                MockResolvedHostname,
-            ),
-            reversed_path.segments[0],
+            Segment(MockIPAddress, Direction.INCOMING, "address", MockResolvedHostname), reversed_path.segments[0]
         )
 
         self.assertEqual(
-            Segment(MockResolvedHostname, Direction.OUTGOING, "hostname", MockHostname),
-            reversed_path.segments[1],
+            Segment(MockResolvedHostname, Direction.OUTGOING, "hostname", MockHostname), reversed_path.segments[1]
         )
 
         self.assertEqual(
-            Segment(MockHostname, Direction.INCOMING, "target_hostname", MockDNSCNAMERecord),
-            reversed_path.segments[2],
+            Segment(MockHostname, Direction.INCOMING, "target_hostname", MockDNSCNAMERecord), reversed_path.segments[2]
         )
 
         self.assertEqual(
@@ -109,6 +94,7 @@ class PathTest(TestCase):
             Path.parse("MockIPAddressV4.<address [is MockIPPort]"),
             Path.parse("MockIPAddressV4.<address [is MockResolvedHostname]"),
             Path.parse("MockIPAddressV4.network"),
+            Path.parse("MockIPAddressV4.<ooi [is MockLabel]"),
         }
 
         self.assertSetEqual(expected_paths, neighbouring_paths)
@@ -127,3 +113,18 @@ class PathTest(TestCase):
         self.assertEqual(Direction.INCOMING, path.segments[0].direction)
         self.assertEqual("dns_zone", path.segments[0].property_name)
         self.assertEqual(MockHostname, path.segments[0].target_type)
+
+    def test_parse_path_outgoing_abstract(self):
+        path = Path.parse("MockLabel.ooi [is MockHostname].network")
+        segment_0 = path.segments[0]
+        segment_1 = path.segments[1]
+
+        self.assertEqual(MockLabel, segment_0.source_type)
+        self.assertEqual("ooi", segment_0.property_name)
+        self.assertEqual(MockHostname, segment_0.target_type)
+        self.assertEqual(Direction.OUTGOING, segment_0.direction)
+
+        self.assertEqual(MockHostname, segment_1.source_type)
+        self.assertEqual("network", segment_1.property_name)
+        self.assertEqual(MockNetwork, segment_1.target_type)
+        self.assertEqual(Direction.OUTGOING, segment_1.direction)

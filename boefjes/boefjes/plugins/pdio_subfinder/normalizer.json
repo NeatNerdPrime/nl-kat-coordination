@@ -1,9 +1,11 @@
 {
-    "id": "pdio-subfinder-normalizer",
-    "consumes": [
-        "pdio-subfinder"
-    ],
-    "produces": [
-        "Hostname"
-    ]
+  "id": "pdio-subfinder-normalizer",
+  "name": "PDIO subfinder",
+  "description": "Parses ProjectDiscovery subfinder data for finding subdomains.",
+  "consumes": [
+    "boefje/pdio-subfinder"
+  ],
+  "produces": [
+    "Hostname"
+  ]
 }

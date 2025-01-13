@@ -1,6 +1,6 @@
 .PHONY: debian ubuntu clean
 
-debian:
+debian12:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-octopoes \
@@ -10,10 +10,10 @@ debian:
 	--env RELEASE_TAG=${RELEASE_TAG} \
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--workdir /app \
-	kat-debian-build-image \
+	kat-debian12-build-image \
 	packaging/scripts/build-debian-package.sh
 
-ubuntu:
+ubuntu22.04:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-octopoes \
@@ -23,7 +23,7 @@ ubuntu:
 	--env RELEASE_TAG=${RELEASE_TAG} \
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--workdir /app \
-	kat-ubuntu-build-image \
+	kat-ubuntu22.04-build-image \
 	packaging/scripts/build-debian-package.sh
 
 format:
@@ -45,18 +45,13 @@ check:
 test:
 	pytest
 
+rtest:
+	docker compose --project-directory . -f .ci/docker-compose.yml down --remove-orphans
+	docker compose --project-directory . -f .ci/docker-compose.yml up -d --build ci_octopoes ci_octopoes_api_worker
+	sleep 2
+	robot -d reports tests/robot
+
 itest:
-	docker-compose -f docker-compose-base.yml -f .ci/docker-compose.yml up -d --build
-	sleep 1
-	robot -d reports --variablefile tests/robot/variables.py:xtdb tests/robot || :
-	docker-compose -f docker-compose-base.yml -f .ci/docker-compose.yml down --remove-orphans
-
-itest-crux:
-	docker-compose -f docker-compose-base.yml -f .ci/docker-compose-crux.yml up -d --build
-	sleep 1
-	robot -d reports --variablefile tests/robot/variables.py:crux tests/robot || :
-	docker-compose -f docker-compose-base.yml -f .ci/docker-compose-crux.yml down --remove-orphans
-
-export-requirements: ## Export the requirements to requirements.txt
-	poetry export --output requirements.txt --without-hashes && \
-	poetry export --output requirements-dev.txt --with dev --without-hashes
+	docker compose --project-directory . -f .ci/docker-compose.yml down --remove-orphans
+	docker compose --project-directory . -f .ci/docker-compose.yml build $(build_args)
+	docker compose --project-directory . -f .ci/docker-compose.yml run --rm octopoes_integration

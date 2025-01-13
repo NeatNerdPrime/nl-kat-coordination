@@ -1,32 +1,22 @@
 import datetime
-import hashlib
-import json
-import os
-import re
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict, Union
-
-import requests
-from ares import CVESearch
-from bs4 import BeautifulSoup
-from cwe import Database
-from django.conf import settings
 from itertools import product
-import logging
 
-RETIREJS_SOURCE = "https://github.com/RetireJS/retire.js/blob/master/repository/jsrepository.json"
+import httpx
+import structlog
+from bs4 import BeautifulSoup
 
 SEPARATOR = "|"
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
 class _Service:
     name: str
-    port: Optional[int] = None
-    transport_protocol: Optional[str] = None
-    description: Optional[str] = None
+    port: int | None = None
+    transport_protocol: str | None = None
+    description: str | None = None
 
 
 @dataclass
@@ -36,119 +26,13 @@ class _PortInfo:
     description: str
 
 
-def cve_info(cve_id: str) -> dict:
-    """Uses the ares module to find information on cves"""
-    cve_search = CVESearch()
-    cve_information = cve_search.id(cve_id)
-
-    if cve_information:
-        return {
-            "description": cve_information.get("summary"),
-            "cvss": cve_information.get("cvss"),
-            "source": f"https://cve.circl.lu/cve/{cve_id}",
-            "information updated": datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-        }
-
-    return {"description": "Not found"}
-
-
-def snyk_info(snyk_id: str) -> dict:
-    """Uses the ares module to find information on cves"""
-    snyk_information = _snyk_search(snyk_id)
-
-    if snyk_information:
-        return {
-            "description": snyk_information.get("summary"),
-            "risk": snyk_information.get("risk"),
-            "source": f"https://snyk.io/vuln/{snyk_id}",
-            "affected versions": snyk_information.get("affected_versions"),
-            "information updated": datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-        }
-
-    return {"description": "Not found"}
-
-
-def _snyk_search(snyk_id: str) -> Dict:
-    url_snyk = f"https://snyk.io/vuln/{snyk_id}"
-    page = requests.get(url_snyk)
-    soup = BeautifulSoup(page.content, "html.parser")
-    return {
-        "risk": soup.select("[data-snyk-test-score]")[0].attrs["data-snyk-test-score"],
-        "affected_versions": soup.select("[data-snyk-test='vuln versions']")[0].text.strip(),
-        "summary": soup.findAll("h2", text=re.compile(r"Overview"))[0].parent.text.strip().split("\n")[2],
-    }
-
-
-def retirejs_info(retirejs_id: str) -> dict:
-    """Uses the retirejs vulnerabilities list to find outdated javascript instances"""
-    filename_path = os.path.join(settings.BASE_DIR, "data/retirejs.json")
-    with open(filename_path, encoding="utf-8") as json_file:
-        data = json.load(json_file)
-
-    _, name, hashed_id = retirejs_id.split("-")
-
-    software = [
-        brand
-        for brand in data
-        if name == brand.lower().replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
-    ][0]
-    issues = data[software]["vulnerabilities"]
-    finding = [issue for issue in issues if _hash_identifiers(issue["identifiers"]) == hashed_id]
-
-    if finding:
-        return {
-            "description": _create_description(finding[0]),
-            "severity": finding[0]["severity"],
-            "source": RETIREJS_SOURCE,
-            "information updated": datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-        }
-
-    return {"description": "Not found"}
-
-
-def _hash_identifiers(identifiers: Dict[str, Union[str, List[str]]]) -> str:
-    pre_hash = ""
-    for identifier in identifiers.values():
-        pre_hash += "".join(identifier)
-    return hashlib.sha1(pre_hash.encode()).hexdigest()[:4]
-
-
-def _create_description(finding: dict) -> str:
-    if "summary" in finding["identifiers"]:
-        description = finding["identifiers"]["summary"] + ". More information at: "
-    else:
-        description = "No summary available. Find more information at: "
-
-    info = finding["info"]
-    description += ", ".join(info[:-1])
-    if len(info) > 1:
-        description += " or " + info[-1]
-    else:
-        description += info[0]
-
-    return description
-
-
-def cwe_info(cwe_id: str) -> dict:
-    """Uses the cwe module to find cwe descriptions"""
-    db = Database()
-    weakness = db.get(cwe_id.split("-")[1])
-    if weakness:
-        return {
-            "description": weakness.description,
-            "source": f'https://cwe.mitre.org/data/definitions/{cwe_id.split("-")[1]}.html',
-            "information updated": datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-            "risk": "Very low",
-        }
-    return {"description": "Not found", "risk": "Very low"}
-
-
-def iana_service_table(search_query: str) -> List[_Service]:
+def iana_service_table(search_query: str) -> list[_Service]:
     services = []
 
-    response = requests.get(
-        "https://www.iana.org/assignments/service-names-port-numbers/"
-        "service-names-port-numbers.xhtml?search=" + search_query
+    response = httpx.get(
+        "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml",
+        params={"search": search_query},
+        timeout=30,
     )
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -164,22 +48,19 @@ def iana_service_table(search_query: str) -> List[_Service]:
         try:
             if name == search_query:
                 service = _Service(
-                    name,
-                    int(port) if port else None,
-                    transport_protocol if transport_protocol else None,
-                    description,
+                    name, int(port) if port else None, transport_protocol if transport_protocol else None, description
                 )
                 services.append(service)
-        except Exception:
+        except Exception:  # noqa: S110
             # just ignore on parse errors
             pass
     return services
 
 
-def service_info(value) -> Tuple[str, str]:
+def service_info(value: str) -> tuple[str, str]:
     """Provides information about IP Services such as common assigned ports for certain protocols and descriptions"""
     services = iana_service_table(value)
-    source = "https://www.iana.org/assignments/service-names-port-numbers/" "service-names-port-numbers.xhtml"
+    source = "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml"
     if not services:
         return f"No description found for {value}", "No source found"
 
@@ -195,7 +76,7 @@ def service_info(value) -> Tuple[str, str]:
 
 # from: https://newbedev.com/how-to-parse-table-with-rowspan-and-colspan
 def table_to_2d(table_tag):
-    rowspans = []  # track pending rowspans
+    rowspans_list: list = []  # track pending rowspans
     rows = table_tag.find_all("tr")
 
     # first scan, see how many column_names we need
@@ -210,12 +91,11 @@ def table_to_2d(table_tag):
         # a colspan of 0 means “fill until the end” but can really only apply
         # to the last cell; ignore it elsewhere.
         colcount = max(
-            colcount,
-            sum(int(c.get("colspan", 1)) or 1 for c in cells[:-1]) + len(cells[-1:]) + len(rowspans),
+            colcount, sum(int(c.get("colspan", 1)) or 1 for c in cells[:-1]) + len(cells[-1:]) + len(rowspans_list)
         )
         # update rowspan bookkeeping; 0 is a span to the bottom.
-        rowspans += [int(c.get("rowspan", 1)) or len(rows) - r for c in cells]
-        rowspans = [s - 1 for s in rowspans if s > 1]
+        rowspans_list += [int(c.get("rowspan", 1)) or len(rows) - r for c in cells]
+        rowspans_list = [s - 1 for s in rowspans_list if s > 1]
 
     # it doesn't matter if there are still rowspan numbers 'active'; no extra
     # rows to show in the table means the larger than 1 rowspan numbers in the
@@ -225,7 +105,7 @@ def table_to_2d(table_tag):
     table = [[None] * colcount for row in rows]
 
     # fill matrix from row data
-    rowspans = {}  # track pending rowspans, column number mapping to count
+    rowspans: dict = {}  # track pending rowspans, column number mapping to count
     for row, row_elem in enumerate(rows):
         span_offset = 0  # how many column_names are skipped due to row and colspans
         for col, cell in enumerate(row_elem.find_all(["td", "th"], recursive=False)):
@@ -255,13 +135,13 @@ def table_to_2d(table_tag):
     return table
 
 
-def _map_usage_value(value: str):
+def _map_usage_value(value: str) -> bool:
     value = value.lower().strip()
-    return value is not None and value != "" and value != "no"
+    return bool(value and value != "no")
 
 
-def wiki_port_tables() -> List[_PortInfo]:
-    response = requests.get("https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers")
+def wiki_port_tables() -> list[_PortInfo]:
+    response = httpx.get("https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers", timeout=30)
     soup = BeautifulSoup(response.text, "html.parser")
 
     rows = []
@@ -281,7 +161,7 @@ def wiki_port_tables() -> List[_PortInfo]:
             if _map_usage_value(tcp):
                 protocols.append("udp")
             description = description.strip()
-        except Exception:
+        except Exception:  # noqa: S112
             continue
 
         items.append(_PortInfo(port, protocols, description))
@@ -289,16 +169,13 @@ def wiki_port_tables() -> List[_PortInfo]:
     return items
 
 
-def port_info(number: str, protocol: str) -> Tuple[str, str]:
+def port_info(number: str, protocol: str) -> tuple[str, str]:
     """Provides possible or common protocols for operation of network applications behind TCP and UDP ports"""
     items = wiki_port_tables()
     source = "https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers"
     descriptions = []
     if not items:
-        return (
-            f"No description found in wiki table for port {number} with protocol {protocol}",
-            source,
-        )
+        return (f"No description found in wiki table for port {number} with protocol {protocol}", source)
 
     for item in items:
         if item.port == int(number) and protocol.lower() in item.protocols:
@@ -307,26 +184,9 @@ def port_info(number: str, protocol: str) -> Tuple[str, str]:
     return ". ".join(descriptions), source
 
 
-def capec_info(capec_id: str) -> dict:
-    response = requests.get(f'https://capec.mitre.org/data/definitions/{capec_id.split("-")[1]}.html')
-    soup = BeautifulSoup(response.text, "html.parser")
-    title = soup.select("h2")[0].text
-    if not title.startswith("CAPEC-"):
-        return {
-            "description": title,
-            "risk": "Very low",
-        }
-    return {
-        "description": title.split(": ")[1],
-        "source": f'https://https://capec.mitre.org/data/definitions/{capec_id.split("-")[1]}.html',
-        "information updated": datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-        "risk": "Very low",
-    }
-
-
 def get_info(ooi_type: str, natural_key: str) -> dict:
     """Adds OOI information to the OOI Information table"""
-    logger.info(f"Getting OOI information for {ooi_type} {natural_key}")
+    logger.info("Getting OOI information for %s %s", ooi_type, natural_key)
     if ooi_type == "IPPort":
         protocol, port = natural_key.split(SEPARATOR)
         description, source = port_info(port, protocol)
@@ -342,14 +202,4 @@ def get_info(ooi_type: str, natural_key: str) -> dict:
             "source": source,
             "information updated": datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
         }
-    if ooi_type == "CVEFindingType":
-        return cve_info(natural_key)
-    if ooi_type == "CWEFindingType":
-        return cwe_info(natural_key)
-    if ooi_type == "CAPECFindingType":
-        return capec_info(natural_key)
-    if ooi_type == "RetireJSFindingType":
-        return retirejs_info(natural_key)
-    if ooi_type == "SnykFindingType":
-        return snyk_info(natural_key)
     return {"description": ""}

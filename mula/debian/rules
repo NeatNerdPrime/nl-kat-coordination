@@ -19,12 +19,19 @@ override_dh_fixperms:
 	dh_fixperms
 	chmod 750 $(DESTDIR)/etc/kat/
 	find $(DESTDIR)/etc/kat -type f -exec chmod 640 {} \;
+	chmod 755 $(DESTDIR)/usr/bin/update-mula-db
 
 override_dh_virtualenv:
 	dh_virtualenv $(DH_VENV_ARGS)
 
-	# remove pip to prevent mutation of venv
+# remove pip to prevent mutation of venv
 	$(DH_VENV_DIR)/bin/python -m pip uninstall --yes pip
 
 override_dh_gencontrol:
 	dh_gencontrol -- -Vpython=`py3versions -d`
+
+execute_after_dh_install:
+	dh_installsysusers
+
+# Disables dh_strip_nondeterminism because it very slow and not useful for us
+override_dh_strip_nondeterminism:

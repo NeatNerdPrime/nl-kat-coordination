@@ -8,9 +8,11 @@ Welcome to the OpenKAT documentation!
    :caption: Contents
 
    introduction/index
+   manual/index
    modules/index
-   technical_design/index
-   release_notes/index
+   installation-and-deployment/index
+   developer-documentation/index
+   ux-design/index
+   release-notes/index
    guidelines/index
    templates/index
-   ux_design/index

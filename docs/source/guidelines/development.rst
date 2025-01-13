@@ -13,7 +13,7 @@ Developers are encouraged to write their code as strictly compliant as possible.
 Tools
 =====
 
-To make development and validation easier, we adopted :ref:`pre-commit` hooks to automate most of this.
+To make development and validation easier, we adopted :ref:`guidelines/development:pre-commit` hooks to automate most of this.
 This will help identify broken/bad code, improve consistency and save time during code reviews.
 Some tools and hooks have been adopted for both local development as well as in our CI/CD pipeline as GitHub actions.
 
@@ -38,16 +38,31 @@ Pre-commit
 
 Continuous Integration will run several checks as mentioned above, like ``black``, ``ruff`` and more using pre-commit hooks.
 Any warnings from these checks will cause the Continuous Integration to fail; therefore, it is helpful to run the check yourself before submitting code.
-This can be done by `installing pre-commit <https://pre-commit.com/#install>`_::
+This can be done automatically by `installing pre-commit <https://pre-commit.com/#install>`_. We recommend that you first
+`install pipx <https://pipx.pypa.io/stable/installation/>`_ and then use pipx to install pre-commit:
 
-    pip install pre-commit
+    pipx install pre-commit
 
-and then running::
+If you already use homebrew you can also use it to install pre-commit:
+
+    brew install pre-commit
+
+Note that using apt to install pre-commit is not recommended because that will give you an old pre-commit version that might
+not work. After pre-commit is installed, run::
 
     pre-commit install
 
 from the root directory of a repository. Now all of the checks will be run each time you commit changes without your needing to run each one manually.
 In addition, using pre-commit will also allow you to more easily remain up-to-date with our code checks as they change.
+
+Signed commits
+==============
+
+The OpenKAT github project is configured to require all commits of a PR to be
+signed. The easiest way to do this is to configure git to automatically sign all
+commits by default. See the `GitHub documentation
+<https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits>`_
+how to do this.
 
 Type Hinting
 ============
@@ -98,7 +113,7 @@ It has a simple syntax and many plugins available that should improve our test c
 Development Environment
 =======================
 
-See :ref:`Installation and deployment` for the overall installation instructions.
+See :doc:`/installation-and-deployment/index` for the overall installation instructions.
 In a development context, we strongly recommend to use the Docker setup to test and make changes in the codebase (and not production packages).
 
 When it comes to development there is no specific IDE that must be used, although many of us would choose PyCharm as the preferred IDE.
@@ -144,6 +159,11 @@ Using docstrings and type hints everywhere improves the quality of the automatic
 
 (Note: we may decide to prefer reStructuredText docstrings later.)
 
+Line ends
+=========
+
+We accept contributions from all sorts of development environments. Please set ``git config --global core.autocrlf true`` if you use a Windows environment. Check out `the documentation on issues related to line ends and white spaces <https://git-scm.com/book/en/v2/Customizing-Git-Git-Configuration#_formatting_and_whitespace>`_ if you need more information or run into issues.
+
 Technical diagrams
 ==================
 
@@ -152,4 +172,10 @@ These are automatically rendered by GitHub and the online Sphinx docs.
 
 Mermaid has support for things like PlantUML and ERD's.
 
-.. require time estimate and timeframe for an issue
+Dependency management
+=====================
+
+Our module dependencies are managed using `Poetry <https://python-poetry.org>`_, through ``pyproject.toml`` and the ``make poetry-dependencies`` command.
+Poetry can create and manage per-module virtual environments for you automatically.
+The CI checks whether the ``pyproject.toml`` file is up-to-date with the ``poetry.lock`` and ``requirements.txt`` files.
+The automatically generated ``requirements.txt`` files are used by the Docker images, Debian packages, and the CI environment.

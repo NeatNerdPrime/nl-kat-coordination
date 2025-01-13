@@ -5,9 +5,9 @@ Revises:
 Create Date: 2022-05-18 14:19:15.882901
 
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "0001"
@@ -37,14 +37,8 @@ def upgrade() -> None:
         "organisation_repository",
         sa.Column("organisation_pk", sa.Integer(), nullable=False),
         sa.Column("repository_pk", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["organisation_pk"],
-            ["organisation.pk"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["repository_pk"],
-            ["repository.pk"],
-        ),
+        sa.ForeignKeyConstraint(["organisation_pk"], ["organisation.pk"]),
+        sa.ForeignKeyConstraint(["repository_pk"], ["repository.pk"]),
     )
     op.create_table(
         "setting",

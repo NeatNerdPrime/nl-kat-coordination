@@ -1,61 +1,55 @@
-import logging
-from functools import cached_property
+from functools import cache
 
 import pika
 import pika.exceptions
+import structlog
 
 from bytes.config import get_settings
 from bytes.events.events import Event
 from bytes.events.manager import EventManager
 
-
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class RabbitMQEventManager(EventManager):
     def __init__(self, queue_uri: str):
         self.queue_uri = queue_uri
-        self.connection = self.connect()
+        self.connection = pika.BlockingConnection(pika.URLParameters(self.queue_uri))
+        self.channel = self.connection.channel()
+        logger.info("Connected to RabbitMQ")
 
     def publish(self, event: Event) -> None:
-        event_data = event.json()
+        self._check_connection()
+
+        event_data = event.model_dump_json()
+        logger.debug("Publishing event: %s", event_data)
         queue_name = self._queue_name(event)
 
-        logger.info("Publishing %s event to %s", event.event_id, queue_name)
-        logger.debug("Event: %s", event_data)
-
-        channel = self.connection.channel()
-        channel.queue_declare(queue_name)
+        try:
+            self.channel.queue_declare(queue_name, durable=True)
+        except pika.exceptions.AMQPError as e:
+            logger.info("Channel error %s, recreating channel", e)
+            self._check_connection()
+            self.channel.queue_declare(queue_name, durable=True)
 
         try:
-            channel.basic_publish(
-                "",
-                queue_name,
-                event_data.encode(),
-            )
-        except pika.exceptions.ConnectionClosed:
-            logger.exception("RabbitMQ connection was closed: retrying")
-            self.connect()
-            channel.basic_publish(
-                "",
-                queue_name,
-                event_data.encode(),
-            )
+            self.channel.basic_publish("", queue_name, event_data.encode())
+        except pika.exceptions.AMQPError:
+            logger.info("RabbitMQ connection was closed: retrying with a new connection.")
+            self._check_connection()
+            self.channel.basic_publish("", queue_name, event_data.encode())
 
-    def connect(self) -> pika.BlockingConnection:
-        connection = self.get_rabbitmq_connection
+        logger.info("Published event [event_id=%s] to queue %s", event.event_id, queue_name)
 
-        if connection.is_closed:
-            del self.get_rabbitmq_connection
-            connection = self.get_rabbitmq_connection
+    def _check_connection(self) -> None:
+        if self.connection.is_closed:
+            self.connection = pika.BlockingConnection(pika.URLParameters(self.queue_uri))
+            self.channel = self.connection.channel()
+            logger.warning("Reconnected to RabbitMQ because connection was closed")
 
-        return connection
-
-    @cached_property
-    def get_rabbitmq_connection(self) -> pika.BlockingConnection:
-        logger.info("Connecting to RabbitMQ")
-
-        return pika.BlockingConnection(pika.URLParameters(self.queue_uri))
+        if self.channel.is_closed:
+            self.channel = self.connection.channel()
+            logger.warning("Recreated RabbitMQ channel because channel was closed")
 
     @staticmethod
     def _queue_name(event: Event) -> str:
@@ -67,10 +61,11 @@ class NullManager(EventManager):
         pass
 
 
+@cache
 def create_event_manager() -> EventManager:
     settings = get_settings()
 
     if settings.queue_uri:
-        return RabbitMQEventManager(settings.queue_uri)
+        return RabbitMQEventManager(str(settings.queue_uri))
 
     return NullManager()

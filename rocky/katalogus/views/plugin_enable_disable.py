@@ -1,65 +1,60 @@
-from logging import getLogger
-
+import structlog
 from django.contrib import messages
 from django.http import HttpResponseRedirect
 from django.shortcuts import redirect
-from django.urls import reverse
+from django.urls.base import reverse
 from django.utils.translation import gettext_lazy as _
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
 
-from account.mixins import OrganizationView
-from katalogus.client import get_katalogus
+from katalogus.views.mixins import SinglePluginView
 
-logger = getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-@class_view_decorator(otp_required)
-class PluginEnableDisableView(OrganizationView):
-    def dispatch(self, request, *args, **kwargs):
-        self.katalogus_client = get_katalogus(self.organization.code)
-        return super().dispatch(request, *args, **kwargs)
-
-    def check_required_settings(self, plugin_id):
-        plugin_schema = self.katalogus_client.get_plugin_schema(plugin_id)
-        if plugin_schema:
-            required_fields = plugin_schema["required"]
-            for field in required_fields:
-                if "message" in self.katalogus_client.get_plugin_setting(plugin_id, field):
-                    return False
-        return True
-
+class PluginEnableDisableView(SinglePluginView):
     def post(self, request, *args, **kwargs):
-        plugin_id = kwargs["plugin_id"]
-        plugin_type = kwargs["plugin_type"]
         plugin_state = kwargs["plugin_state"]
+
         if plugin_state == "True":
-            self.katalogus_client.disable_boefje(plugin_id)
+            self.katalogus_client.disable_plugin(self.plugin)
             messages.add_message(
-                self.request, messages.WARNING, _("Boefje '{boefje_id}' disabled.").format(boefje_id=plugin_id)
+                self.request,
+                messages.WARNING,
+                _("{} '{}' disabled.").format(self.plugin.type.title(), self.plugin.name),
+            )
+            return HttpResponseRedirect(request.POST.get("current_url"))
+
+        if self.plugin.can_scan(self.organization_member):
+            self.katalogus_client.enable_plugin(self.plugin)
+            messages.add_message(
+                self.request, messages.SUCCESS, _("{} '{}' enabled.").format(self.plugin.type.title(), self.plugin.name)
             )
         else:
-            if self.check_required_settings(plugin_id):
-                self.katalogus_client.enable_boefje(plugin_id)
-                messages.add_message(
-                    self.request, messages.SUCCESS, _("Boefje '{boefje_id}' enabled.").format(boefje_id=plugin_id)
+            if (
+                self.organization_member.trusted_clearance_level
+                != self.organization_member.acknowledged_clearance_level
+            ):
+                member_clearance_level_text = _(
+                    "You have not acknowledged your clearance level. "
+                    "Go to your profile page to acknowledge your clearance level."
+                )
+            elif self.organization_member.max_clearance_level < 0:
+                member_clearance_level_text = _(
+                    "Your clearance level is not set. Go to your profile page to see your clearance "
+                    "or contact the administrator to set a clearance level."
                 )
             else:
-                messages.add_message(
-                    self.request,
-                    messages.INFO,
-                    _("Before enabling, please set the required settings for boefje '{boefje_id}'.").format(
-                        boefje_id=plugin_id
-                    ),
-                )
-                return redirect(
-                    reverse(
-                        "plugin_settings_add",
-                        kwargs={
-                            "organization_code": self.organization.code,
-                            "plugin_id": plugin_id,
-                            "plugin_type": plugin_type,
-                        },
-                    )
-                )
-        return HttpResponseRedirect(request.POST.get("current_url"))
+                clearance_level = self.organization_member.max_clearance_level
+
+                member_clearance_level_text = _(
+                    "Your clearance level is L{}. Contact your administrator to get a higher clearance level."
+                ).format(clearance_level)
+
+            messages.add_message(
+                self.request,
+                messages.ERROR,
+                _("To enable {} you need at least a clearance level of L{}. " + member_clearance_level_text).format(
+                    self.plugin.name.title(), self.plugin.scan_level.value
+                ),
+            )
+
+        return redirect(reverse("katalogus", kwargs={"organization_code": self.organization.code}))

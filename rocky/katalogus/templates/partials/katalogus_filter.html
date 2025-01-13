@@ -1,16 +1,21 @@
-{% extends 'partials/list_filters.html' %}
 {% load i18n %}
 
-{% block title %}
-  {{ total_plugins }} {% translate 'Available plugins' %}
-{% endblock %}
+<div class="filter">
+    <div>
+        <button aria-expanded="false"
+                data-hide-filters-label='{% translate "Hide filters" %}'>
+            {% translate "Show filters" %}
+            {% if active_filters_counter > 0 %}
+                ({{ active_filters_counter }} {% translate "applied" %})
+            {% endif %}
+        </button>
+    </div>
+    <form novalidate method="get" class="help">
+        {% include "partials/form/fieldset.html" with fields=form %}
 
-{% block filter_form %}
-  <form novalidate method="get" class="help">
-        {% csrf_token %}
-        {% include 'partials/form/fieldset.html' with fields=form %}
-        <fieldset>
-          <button type="submit">{% translate 'Update List' %}</button>
-        </fieldset>
-      </form>
-{% endblock %}
+        <div class="button-container">
+            <button type="submit">{% translate "Filter plugins" %}</button>
+            <a href="{{ request.path }}" class="button ghost">{% translate "Clear filter" %}</a>
+        </div>
+    </form>
+</div>

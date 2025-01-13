@@ -1,431 +1,394 @@
-from typing import Type, List, Dict, Any
+from datetime import datetime, timezone
+from typing import Any
 
+from account.forms import MemberRegistrationForm, OnboardingOrganizationUpdateForm, OrganizationForm
+from account.mixins import OrganizationPermissionRequiredMixin, OrganizationView
+from account.views import OOIClearanceMixin
 from django.contrib import messages
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
-from django.core.exceptions import BadRequest
-from django.http import Http404
+from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.shortcuts import redirect
 from django.urls import reverse_lazy
 from django.urls.base import reverse
+from django.utils.http import urlencode
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import TemplateView
 from django.views.generic.edit import CreateView, FormView, UpdateView
-from django_otp.decorators import otp_required
-from octopoes.connector.octopoes import OctopoesAPIConnector
-from octopoes.models import OOI
-from octopoes.models.ooi.network import Network
-from octopoes.models.types import type_by_name
-from two_factor.views.utils import class_view_decorator
+from httpx import HTTPError
+from katalogus.client import Plugin
+from reports.report_types.definitions import ReportPlugins
+from reports.report_types.dns_report.report import DNSReport
+from reports.views.base import get_selection
+from reports.views.generate_report import SaveGenerateReportMixin
+from tools.models import GROUP_ADMIN, GROUP_CLIENT, GROUP_REDTEAM, Organization, OrganizationMember
+from tools.ooi_helpers import get_or_create_ooi
+from tools.view_helpers import Breadcrumb
 
-from account.forms import OrganizationForm, OnboardingOrganizationUpdateForm
-from account.mixins import OrganizationView
-from katalogus.client import get_katalogus
-from onboarding.forms import (
-    OnboardingCreateUserAdminForm,
-    OnboardingCreateUserRedTeamerForm,
-    OnboardingCreateUserClientForm,
-    OnboardingSetClearanceLevelForm,
-)
-from onboarding.mixins import RedTeamUserRequiredMixin, SuperOrAdminUserRequiredMixin
+from octopoes.models import OOI
+from octopoes.models.ooi.dns.zone import Hostname
+from octopoes.models.ooi.network import Network
+from octopoes.models.ooi.web import URL
+from onboarding.forms import OnboardingCreateObjectURLForm, OnboardingSetClearanceLevelForm
 from onboarding.view_helpers import (
-    KatIntroductionStepsMixin,
-    KatIntroductionAdminStepsMixin,
-    KatIntroductionRegistrationStepsMixin,
+    DNS_REPORT_LEAST_CLEARANCE_LEVEL,
+    ONBOARDING_PERMISSIONS,
+    IntroductionAdminStepsMixin,
+    IntroductionRegistrationStepsMixin,
+    IntroductionStepsMixin,
+    OnboardingBreadcrumbsMixin,
+    RegistrationBreadcrumbsMixin,
 )
-from rocky.bytes_client import get_bytes_client
-from rocky.exceptions import IndemnificationNotPresentException, ClearanceLevelTooLowException, RockyError
+from rocky.exceptions import RockyError
+from rocky.messaging import clearance_level_warning_dns_report
 from rocky.views.indemnification_add import IndemnificationAddView
-from rocky.views.ooi_report import Report, DNSReport, build_findings_list_from_store
-from rocky.views.ooi_view import BaseOOIFormView, SingleOOITreeMixin, BaseOOIDetailView
-from tools.forms.boefje import SelectBoefjeForm
-from tools.models import Organization, OrganizationMember
-from tools.ooi_form import OOIForm
-from tools.ooi_helpers import (
-    get_or_create_ooi,
-    create_object_tree_item_from_ref,
-    filter_ooi_tree,
-)
-from tools.user_helpers import is_red_team
-from tools.view_helpers import get_ooi_url, BreadcrumbsMixin, Breadcrumb
+from rocky.views.ooi_view import SingleOOIMixin, SingleOOITreeMixin
 
 User = get_user_model()
-
-
-class OnboardingBreadcrumbsMixin(BreadcrumbsMixin, OrganizationView):
-    def build_breadcrumbs(self):
-        return [
-            {
-                "url": reverse_lazy("step_introduction", kwargs={"organization_code": self.organization.code}),
-                "text": _("OpenKAT introduction"),
-            },
-        ]
 
 
 class OnboardingStart(OrganizationView):
     def get(self, request, *args, **kwargs):
         if request.user.is_superuser:
             return redirect("step_introduction_registration")
-        if is_red_team(request.user):
+        if self.organization_member.has_perms(ONBOARDING_PERMISSIONS):
             return redirect("step_introduction", kwargs={"organization_code": self.organization.code})
         return redirect("crisis_room")
 
 
 # REDTEAMER FLOW
-@class_view_decorator(otp_required)
+
+
 class OnboardingIntroductionView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    TemplateView,
+    OrganizationPermissionRequiredMixin, IntroductionStepsMixin, OrganizationView, TemplateView
 ):
+    """
+    1. Start the onboarding wizard. What is OpenKAT and what it does.
+    """
+
     template_name = "step_1_introduction.html"
     current_step = 1
+    permission_required = "tools.can_scan_organization"
 
 
-@class_view_decorator(otp_required)
 class OnboardingChooseReportInfoView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    TemplateView,
+    OrganizationPermissionRequiredMixin, IntroductionStepsMixin, OrganizationView, TemplateView
 ):
+    """
+    2. Introduction into reporting. All the necessities to generate a report.
+    """
+
     template_name = "step_2a_choose_report_info.html"
     current_step = 2
+    permission_required = "tools.can_scan_organization"
 
 
-@class_view_decorator(otp_required)
 class OnboardingChooseReportTypeView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    TemplateView,
+    OrganizationPermissionRequiredMixin, IntroductionStepsMixin, OrganizationView, TemplateView
 ):
+    """
+    3. Choose a report type. Gives the user a choice of many report types. Ex. DNS report
+    """
+
     template_name = "step_2b_choose_report_type.html"
     current_step = 2
+    permission_required = "tools.can_scan_organization"
 
 
-@class_view_decorator(otp_required)
-class OnboardingSetupScanSelectPluginsView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    TemplateView,
-):
-    template_name = "step_3e_setup_scan_select_plugins.html"
-    current_step = 3
-    report: Type[Report] = DNSReport
-
-    def get_form(self):
-        boefjes = self.report.get_boefjes(self.organization)
-        boefjes = [
-            boefje for boefje in boefjes if boefje["boefje"].scan_level <= int(self.request.session["clearance_level"])
-        ]
-        kwargs = {
-            "initial": {"boefje": [item["id"] for item in boefjes if item.get("required", False)]},
-        }
-
-        if self.request.method in ("POST", "PUT"):
-            kwargs.update(
-                {
-                    "data": self.request.POST,
-                }
-            )
-
-        return SelectBoefjeForm(boefjes=boefjes, organization=self.organization, **kwargs)
-
-    def post(self, request, *args, **kwargs):
-        if "ooi_id" not in request.GET:
-            raise BadRequest("No OOI ID provided")
-        ooi_id = request.GET["ooi_id"]
-
-        form = self.get_form()
-        if form.is_valid():
-            if "boefje" in request.POST:
-                data = form.cleaned_data
-                request.session["selected_boefjes"] = data
-            return redirect(get_ooi_url("step_setup_scan_ooi_detail", ooi_id, self.organization.code))
-        return self.get(request, *args, **kwargs)
-
-    def get_context_data(self, **kwargs: Any) -> Dict[str, Any]:
-        context = super().get_context_data(**kwargs)
-        context["select_boefjes_form"] = self.get_form()
-        return context
-
-
-@class_view_decorator(otp_required)
 class OnboardingSetupScanOOIInfoView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    TemplateView,
+    OrganizationPermissionRequiredMixin, IntroductionStepsMixin, OrganizationView, TemplateView
 ):
+    """
+    4. Explanation that an object is needed to make scans.
+    """
+
     template_name = "step_3a_setup_scan_ooi_info.html"
     current_step = 3
+    permission_required = "tools.can_scan_organization"
 
 
-class OnboardingOOIForm(OOIForm):
-    """
-    hidden_fields - key (field name) value (field value) pair that will rendered as hidden field
-    """
-
-    def __init__(
-        self, hidden_fields: Dict[str, str], ooi_class: Type[OOI], connector: OctopoesAPIConnector, *args, **kwargs
-    ):
-        self.hidden_ooi_fields = hidden_fields
-        super().__init__(ooi_class, connector, *args, **kwargs)
-
-    def get_fields(self):
-        return self.generate_form_fields(self.hidden_ooi_fields)
-
-
-@class_view_decorator(otp_required)
 class OnboardingSetupScanOOIAddView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    BaseOOIFormView,
+    OrganizationPermissionRequiredMixin, IntroductionStepsMixin, SingleOOITreeMixin, FormView
 ):
+    """
+    5. The user will create a URL object. Shows a form and validation to create object.
+    """
+
     template_name = "step_3b_setup_scan_ooi_add.html"
     current_step = 3
-    form_class = OnboardingOOIForm
-    hidden_form_fields = {
-        "network": {
-            "ooi": Network(name="internet"),
-        }
-    }
+    permission_required = "tools.can_scan_organization"
+    form_class = OnboardingCreateObjectURLForm
 
     def setup(self, request, *args, **kwargs):
         super().setup(request, *args, **kwargs)
-        self.ooi_class = self.get_ooi_class()
+        self.report_type = self.request.GET.get("report_type", "")
 
-    def get_hidden_form_fields(self):
-        hidden_fields = {}
-        bytes_client = get_bytes_client(self.organization.code)
-
-        for field_name, params in self.hidden_form_fields.items():
-            ooi, created = get_or_create_ooi(self.octopoes_api_connector, bytes_client, params["ooi"])
-            hidden_fields[field_name] = ooi.primary_key
-
-            if created:
-                messages.success(
-                    self.request,
-                    _(
-                        "OpenKAT added the following required object to your object list to complete your request: {}"
-                    ).format(str(ooi)),
-                )
-        return hidden_fields
-
-    def get_form_kwargs(self):
-        kwargs = super().get_form_kwargs()
-        hidden_fields = self.get_hidden_form_fields()
-        kwargs.update({"hidden_fields": hidden_fields, "initial": hidden_fields})
-
-        return kwargs
-
-    def get_ooi_class(self) -> Type[OOI]:
-        try:
-            return type_by_name(self.kwargs["ooi_type"])
-        except KeyError:
-            raise Http404("OOI not found")
-
-    def get_success_url(self, ooi: OOI) -> str:
-        self.request.session["ooi_id"] = ooi.primary_key
-        return get_ooi_url("step_set_clearance_level", ooi.primary_key, self.organization.code)
-
-    def build_breadcrumbs(self) -> List[Breadcrumb]:
-        return super().build_breadcrumbs() + [
-            {
-                "url": reverse("ooi_add_type_select", kwargs={"organization_code": self.organization.code}),
-                "text": _("Creating an object"),
-            },
-        ]
-
-    def get_context_data(self, **kwargs: Any) -> Dict[str, Any]:
-        context = super().get_context_data(**kwargs)
-        context["type"] = self.ooi_class.get_ooi_type()
-        return context
-
-
-@class_view_decorator(otp_required)
-class OnboardingSetupScanOOIDetailView(
-    RedTeamUserRequiredMixin,
-    SingleOOITreeMixin,
-    KatIntroductionStepsMixin,
-    OnboardingBreadcrumbsMixin,
-    TemplateView,
-):
-    template_name = "step_3c_setup_scan_ooi_detail.html"
-    current_step = 3
-
-    def get_ooi_id(self) -> str:
-        if "ooi_id" in self.request.session:
-            return self.request.session["ooi_id"]
-        return super().get_ooi_id()
-
-    def get(self, request, *args, **kwargs):
-        self.ooi = self.get_ooi()
-        return super().get(request, *args, **kwargs)
-
-    def post(self, request, *args, **kwargs):
-        ooi = self.get_ooi()
-        level = int(self.request.session["clearance_level"])
-        try:
-            self.raise_clearance_level(ooi.reference, level)
-        except (IndemnificationNotPresentException, ClearanceLevelTooLowException):
-            return self.get(request, *args, **kwargs)
-
-        self.enable_selected_boefjes()
-        return redirect(get_ooi_url("step_report", self.get_ooi_id(), self.organization.code))
-
-    def enable_selected_boefjes(self) -> None:
-        if not self.request.session.get("selected_boefjes"):
-            return
-        for boefje_id in self.request.session["selected_boefjes"]:
-            get_katalogus(self.organization.code).enable_boefje(boefje_id)
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context["ooi"] = self.ooi
-        return context
-
-
-@class_view_decorator(otp_required)
-class OnboardingSetClearanceLevelView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
-    OnboardingBreadcrumbsMixin,
-    FormView,
-):
-    template_name = "step_3d_set_clearance_level.html"
-    form_class = OnboardingSetClearanceLevelForm
-    current_step = 3
-    initial = {"level": 2}
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context["boefjes"] = self.get_boefjes_tiles()
-        context["ooi"] = self.request.GET.get("ooi_id", None)
-        return context
-
-    def get_success_url(self, **kwargs):
-        return get_ooi_url("step_setup_scan_select_plugins", self.request.GET.get("ooi_id"), self.organization.code)
+    def get_or_create_url_object(self, url: str) -> OOI:
+        network = Network(name="internet")
+        url = URL(network=network.reference, raw=url, user_id=self.request.user.id)
+        observed_at = datetime.now(timezone.utc)
+        url_ooi, _ = get_or_create_ooi(self.octopoes_api_connector, self.bytes_client, url, observed_at)
+        return url_ooi
 
     def form_valid(self, form):
-        self.request.session["clearance_level"] = form.cleaned_data["level"]
-        self.add_success_notification()
-        return super().form_valid(form)
+        cleaned_url = form.cleaned_data["url"]
+        ooi = self.get_or_create_url_object(cleaned_url)
+        selection = {"ooi": ooi.primary_key, "report_type": self.report_type}
+        return redirect(
+            reverse("step_clearance_level_introduction", kwargs={"organization_code": self.organization.code})
+            + get_selection(self.request, selection)
+        )
 
-    def add_success_notification(self):
-        success_message = _("Clearance level has been set")
-        messages.add_message(self.request, messages.SUCCESS, success_message)
+    def build_breadcrumbs(self) -> list[Breadcrumb]:
+        return super().build_breadcrumbs() + [
+            {
+                "url": reverse("ooi_add_type_select", kwargs={"organization_code": self.organization.code})
+                + get_selection(self.request),
+                "text": _("Creating an object"),
+            }
+        ]
 
-    def get_boefje_cover_img(self, boefje_id):
-        return reverse("plugin_cover", kwargs={"plugin_id": boefje_id, "organization_code": self.organization.code})
 
-    def get_boefjes_tiles(self):
+class OnboardingClearanceLevelIntroductionView(
+    OrganizationPermissionRequiredMixin,
+    IntroductionStepsMixin,
+    OnboardingBreadcrumbsMixin,
+    OrganizationView,
+    TemplateView,
+):
+    """
+    6. Explanation what clearance levels mean.
+    """
+
+    template_name = "step_3d_clearance_level_introduction.html"
+    permission_required = "tools.can_set_clearance_level"
+    current_step = 3
+
+    def get_boefjes_tiles(self) -> list[dict[str, Any]]:
         tiles = [
             {
-                "tile_image": self.get_boefje_cover_img("dns_zone"),
-                "scan_level": "l1",
+                "id": "dns_zone",
+                "type": "boefje",
+                "scan_level": "1",
                 "name": "DNS-Zone",
-                "description": "Fetch the parent DNS zone of a hostname",
+                "description": _("Fetch the parent DNS zone of a hostname"),
+                "enabled": False,
             },
             {
-                "tile_image": self.get_boefje_cover_img("fierce"),
-                "scan_level": "l3",
+                "id": "fierce",
+                "type": "boefje",
+                "scan_level": "3",
                 "name": "Fierce",
-                "description": "Finds subdomains by brute force",
+                "description": _("Finds subdomains by brute force"),
+                "enabled": False,
             },
         ]
         return tiles
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["ooi"] = self.request.GET.get("ooi", "")
+        context["boefjes"] = self.get_boefjes_tiles()
+        return context
 
-@class_view_decorator(otp_required)
-class OnboardingReportView(
-    RedTeamUserRequiredMixin,
-    KatIntroductionStepsMixin,
+
+class OnboardingAcknowledgeClearanceLevelView(
+    OrganizationPermissionRequiredMixin,
+    IntroductionStepsMixin,
+    OnboardingBreadcrumbsMixin,
+    OOIClearanceMixin,
+    OrganizationView,
     TemplateView,
 ):
-    template_name = "step_4_report.html"
-    current_step = 4
+    """
+    7. Explains the user that before setting a clearance level, they must have a permissiom to do so.
+    Here they acknowledge the clearance level assigned by their administrator.
+    """
+
+    template_name = "step_3e_trusted_acknowledge_clearance_level.html"
+    permission_required = "tools.can_set_clearance_level"
+    current_step = 3
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["ooi"] = self.request.GET.get("ooi", "")
+        context["dns_report_least_clearance_level"] = DNS_REPORT_LEAST_CLEARANCE_LEVEL
+        return context
+
+
+class OnboardingSetClearanceLevelView(
+    OrganizationPermissionRequiredMixin,
+    IntroductionStepsMixin,
+    OnboardingBreadcrumbsMixin,
+    SingleOOITreeMixin,
+    FormView,
+):
+    """
+    8. Set the actual clearance level on the object created before.
+    """
+
+    template_name = "step_3f_set_clearance_level.html"
+    permission_required = "tools.can_set_clearance_level"
+    current_step = 3
+    form_class = OnboardingSetClearanceLevelForm
+    initial = {"level": DNS_REPORT_LEAST_CLEARANCE_LEVEL}
+
+    def setup(self, request, *args, **kwargs):
+        super().setup(request, *args, **kwargs)
+        self.url = self.request.GET.get("ooi", "")
+        self.report_type = self.request.GET.get("report_type", "")
+        self.selection = {"ooi": self.url, "report_type": self.report_type}
+
+    def form_valid(self, form):
+        ooi = self.get_ooi(self.url)
+        if not self.can_raise_clearance_level(ooi, DNS_REPORT_LEAST_CLEARANCE_LEVEL):
+            return self.get(self.request, self.args, self.kwargs)
+        return redirect(
+            reverse("step_setup_scan_select_plugins", kwargs={"organization_code": self.organization.code})
+            + get_selection(self.request, self.selection)
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["ooi"] = self.url
+        context["dns_report_least_clearance_level"] = DNS_REPORT_LEAST_CLEARANCE_LEVEL
+        return context
+
+
+class OnboardingSetupScanSelectPluginsView(
+    OrganizationPermissionRequiredMixin, IntroductionStepsMixin, OrganizationView, TemplateView
+):
+    """
+    9. Shows the user all required and optional plugins to select from. Required plugins are mandatory to continue.
+    """
+
+    template_name = "step_3g_setup_scan_select_plugins.html"
+    permission_required = "tools.can_enable_disable_boefje"
+    current_step = 3
+    plugins: ReportPlugins = DNSReport.plugins
+
+    def get_plugins(self) -> dict[str, list[Plugin]]:
+        all_plugins = {}
+        katalogus = self.get_katalogus()
+        for required_optional, plugin_ids in self.plugins.items():
+            plugins = katalogus.get_plugins(ids=[plugin_id for plugin_id in plugin_ids])  # type: ignore
+            all_plugins[required_optional] = plugins
+
+        return all_plugins
 
     def post(self, request, *args, **kwargs):
-        if "ooi_id" not in request.GET:
-            raise BadRequest("No OOI ID provided")
-        ooi_id = request.GET["ooi_id"]
+        selected_plugins = request.POST.getlist("plugin", [])
 
+        if not selected_plugins:
+            messages.error(request, _("Please select a plugin to proceed."))
+            return self.get(request, *args, **kwargs)
+        for plugin_id in self.plugins["required"]:
+            if plugin_id not in selected_plugins:
+                messages.error(request, _("Please select all required plugins to proceed."))
+                return self.get(request, *args, **kwargs)
+        for selected_plugin in selected_plugins:
+            try:
+                self.get_katalogus().enable_boefje_by_id(selected_plugin)
+            except HTTPError:
+                messages.error(
+                    request,
+                    _("An error occurred while enabling {}. The plugin is not available.").format(selected_plugin),
+                )
+                return self.get(request, *args, **kwargs)
+
+        messages.success(request, _("Plugins successfully enabled."))
+
+        return redirect(
+            reverse("step_setup_scan_ooi_detail", kwargs={"organization_code": self.organization.code})
+            + get_selection(self.request)
+        )
+
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
+        context = super().get_context_data(**kwargs)
+        context["plugins"] = self.get_plugins()
+        return context
+
+
+class OnboardingSetupScanOOIDetailView(
+    OrganizationPermissionRequiredMixin,
+    SingleOOITreeMixin,
+    IntroductionStepsMixin,
+    OnboardingBreadcrumbsMixin,
+    TemplateView,
+):
+    """
+    9. Shows the user object information, more in depth info about the object.
+    """
+
+    template_name = "step_3c_setup_scan_ooi_detail.html"
+    current_step = 3
+    permission_required = "tools.can_scan_organization"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["ooi"] = self.get_ooi(self.request.GET.get("ooi", ""))
+        return context
+
+
+class OnboardingReportView(
+    OrganizationPermissionRequiredMixin, SaveGenerateReportMixin, IntroductionStepsMixin, SingleOOIMixin, TemplateView
+):
+    """
+    10. The user already started the scan and is now waiting till scans are finished to generate the report.
+    Onboarding finished and member onboarded, next step will be the actual report.
+    """
+
+    template_name = "step_4_report.html"
+    current_step = 4
+    permission_required = "tools.can_scan_organization"
+
+    def setup(self, request, *args, **kwargs):
+        super().setup(request, *args, **kwargs)
+        self.selected_oois = self.get_ooi_pks()
+        self.selected_report_types = self.get_report_type_ids()
+
+    def get_ooi_pks(self) -> list[str]:
+        ooi = self.get_ooi(self.request.GET.get("ooi", ""))
+        hostname_ooi = [Hostname(name=ooi.web_url.tokenized["netloc"]["name"], network=ooi.network)]
+        return [hostname_ooi[0].primary_key]
+
+    def get_report_type_ids(self) -> list[str]:
+        return [self.request.GET.get("report_type", "")]
+
+    def post(self, request, *args, **kwargs):
         self.set_member_onboarded()
-        return redirect(get_ooi_url("dns_report", ooi_id, self.organization.code))
+
+        report_ooi = self.save_report([("Onboarding Report", "Onboarding Report")])
+
+        if report_ooi:
+            return redirect(
+                reverse("view_report", kwargs={"organization_code": self.organization.code})
+                + "?"
+                + urlencode({"report_id": report_ooi.reference})
+            )
+
+        return self.get(request, *args, **kwargs)
 
     def set_member_onboarded(self):
         member = OrganizationMember.objects.get(user=self.request.user, organization=self.organization)
         member.onboarded = True
+        member.status = OrganizationMember.STATUSES.ACTIVE
         member.save()
 
 
-class BaseReportView(RedTeamUserRequiredMixin, BaseOOIDetailView):
-    report: Type[Report]
-    depth = 15
-
-    def get_tree_dict(self):
-        return create_object_tree_item_from_ref(self.tree.root, self.tree.store)
-
-    def get_filtered_tree(self, tree_dict):
-        return filter_ooi_tree(tree_dict, self.report.get_ooi_type_filter())
-
-    def get_findings_list(self):
-        return build_findings_list_from_store(self.tree.store, self.report.get_finding_filter())
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context["findings_list"] = self.get_findings_list()
-        context["tree"] = self.get_filtered_tree(self.get_tree_dict())
-        return context
-
-
-@class_view_decorator(otp_required)
-class DnsReportView(OnboardingBreadcrumbsMixin, BaseReportView):
-    template_name = "dns_report.html"
-    report = DNSReport
-
-    def get_dns_zone_for_url(self):
-        """
-        Path to DNSZone: url > hostnamehttpurl > netloc > fqdn > dns_zone
-        """
-        if self.ooi.ooi_type != "URL":
-            return self.ooi
-
-        try:
-            web_url = self.tree.store[str(self.ooi.web_url)]
-            netloc = self.tree.store[str(web_url.netloc)]
-            fqdn = self.tree.store[str(netloc.fqdn)]
-            dns_zone = super().get_ooi(pk=str(fqdn.dns_zone))
-            return dns_zone
-        except KeyError:
-            messages.add_message(self.request, messages.ERROR, _("No DNS zone found."))
-            return self.ooi
-
-
-class RegistrationBreadcrumbsMixin(BreadcrumbsMixin):
-    breadcrumbs = [
-        {"url": reverse_lazy("step_introduction_registration"), "text": _("OpenKAT Setup")},
-    ]
-
-
 # account flow
-@class_view_decorator(otp_required)
-class OnboardingIntroductionRegistrationView(
-    SuperOrAdminUserRequiredMixin, KatIntroductionRegistrationStepsMixin, TemplateView
-):
+
+
+class OnboardingIntroductionRegistrationView(PermissionRequiredMixin, IntroductionRegistrationStepsMixin, TemplateView):
     """
     Step: 1 - Registration introduction
     """
 
     template_name = "account/step_1_registration_intro.html"
     current_step = 1
+    permission_required = "tools.add_organizationmember"
 
 
-@class_view_decorator(otp_required)
-class OnboardingOrganizationSetupView(
-    SuperOrAdminUserRequiredMixin,
-    KatIntroductionRegistrationStepsMixin,
-    CreateView,
-):
+class OnboardingOrganizationSetupView(PermissionRequiredMixin, IntroductionRegistrationStepsMixin, CreateView):
     """
     Step 2: Create a new organization
     """
@@ -434,12 +397,11 @@ class OnboardingOrganizationSetupView(
     template_name = "account/step_2a_organization_setup.html"
     form_class = OrganizationForm
     current_step = 2
+    permission_required = "tools.add_organization"
 
     def get(self, request, *args, **kwargs):
-        organization = Organization.objects.first()
-        if organization:
-            self.get_or_create_organizationmember(organization)
-            return redirect(reverse("step_organization_update", kwargs={"organization_code": organization.code}))
+        if member := OrganizationMember.objects.filter(user=self.request.user).first():
+            return redirect(reverse("step_organization_update", kwargs={"organization_code": member.organization.code}))
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
@@ -451,38 +413,29 @@ class OnboardingOrganizationSetupView(
         return self.get(request, *args, **kwargs)
 
     def get_success_url(self) -> str:
-        organization = Organization.objects.first()
-        self.get_or_create_organizationmember(organization)
-        return reverse_lazy("step_indemnification_setup", kwargs={"organization_code": organization.code})
+        self.create_first_member(self.object)
+        return reverse_lazy("step_indemnification_setup", kwargs={"organization_code": self.object.code})
 
     def form_valid(self, form):
         org_name = form.cleaned_data["name"]
         result = super().form_valid(form)
         self.add_success_notification(org_name)
-
         return result
 
-    def get_or_create_organizationmember(self, organization):
-        if self.request.user.is_superuser:
-            OrganizationMember.objects.get_or_create(
-                user=self.request.user,
-                organization=organization,
-                trusted_clearance_level=4,
-                acknowledged_clearance_level=4,
-            )
-        else:
-            OrganizationMember.objects.get_or_create(user=self.request.user, organization=organization)
+    def create_first_member(self, organization):
+        member = OrganizationMember.objects.create(user=self.request.user, organization=organization)
+        if member.user.is_superuser:
+            member.trusted_clearance_level = 4
+            member.acknowledged_clearance_level = 4
+            member.save()
 
     def add_success_notification(self, org_name):
         success_message = _("{org_name} successfully created.").format(org_name=org_name)
         messages.add_message(self.request, messages.SUCCESS, success_message)
 
 
-@class_view_decorator(otp_required)
 class OnboardingOrganizationUpdateView(
-    SuperOrAdminUserRequiredMixin,
-    KatIntroductionAdminStepsMixin,
-    UpdateView,
+    OrganizationPermissionRequiredMixin, IntroductionAdminStepsMixin, OrganizationView, UpdateView
 ):
     """
     Step 2: Update an existing organization (only name not code)
@@ -492,6 +445,7 @@ class OnboardingOrganizationUpdateView(
     template_name = "account/step_2a_organization_update.html"
     form_class = OnboardingOrganizationUpdateForm
     current_step = 2
+    permission_required = "tools.change_organization"
 
     def get_object(self, queryset=None):
         return self.organization
@@ -509,12 +463,7 @@ class OnboardingOrganizationUpdateView(
         messages.add_message(self.request, messages.SUCCESS, success_message)
 
 
-@class_view_decorator(otp_required)
-class OnboardingIndemnificationSetupView(
-    SuperOrAdminUserRequiredMixin,
-    KatIntroductionAdminStepsMixin,
-    IndemnificationAddView,
-):
+class OnboardingIndemnificationSetupView(IntroductionAdminStepsMixin, IndemnificationAddView):
     """
     Step 3: Agree to idemnification to scan oois
     """
@@ -526,50 +475,55 @@ class OnboardingIndemnificationSetupView(
         return reverse_lazy("step_account_setup_intro", kwargs={"organization_code": self.organization.code})
 
 
-@class_view_decorator(otp_required)
-class OnboardingAccountSetupIntroView(SuperOrAdminUserRequiredMixin, KatIntroductionAdminStepsMixin, TemplateView):
+class OnboardingAccountSetupIntroView(
+    OrganizationPermissionRequiredMixin, IntroductionAdminStepsMixin, OrganizationView, TemplateView
+):
     """
     Step 4: Split flow to or continue with single account or continue to multiple account creation
     """
 
     template_name = "account/step_2c_account_setup_intro.html"
     current_step = 4
+    permission_required = "tools.add_organizationmember"
 
 
-@class_view_decorator(otp_required)
-class OnboardingAccountCreationMixin(SuperOrAdminUserRequiredMixin, KatIntroductionAdminStepsMixin, CreateView):
-    """ """
+class OnboardingAccountCreationMixin(
+    OrganizationPermissionRequiredMixin, IntroductionAdminStepsMixin, OrganizationView, FormView
+):
+    account_type: str | None = None
+    permission_required = "tools.add_organizationmember"
 
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        kwargs["organization_code"] = self.organization.code
+        kwargs["organization"] = self.organization
+        kwargs["account_type"] = self.account_type
         return kwargs
 
 
 # Account setup for multiple user accounts: redteam, admins, clients
-@class_view_decorator(otp_required)
-class OnboardingChooseUserTypeView(KatIntroductionAdminStepsMixin, TemplateView):
+
+
+class OnboardingChooseUserTypeView(
+    OrganizationPermissionRequiredMixin, IntroductionAdminStepsMixin, OrganizationView, TemplateView
+):
     """
     Step 1: Introduction about how to create multiple user accounts
     """
 
     current_step = 4
     template_name = "account/step_3_account_user_type.html"
+    permission_required = "tools.add_organizationmember"
 
 
-@class_view_decorator(otp_required)
-class OnboardingAccountSetupAdminView(
-    RegistrationBreadcrumbsMixin,
-    OnboardingAccountCreationMixin,
-):
+class OnboardingAccountSetupAdminView(RegistrationBreadcrumbsMixin, OnboardingAccountCreationMixin):
     """
     Step 1: Create an admin account with admin rights
     """
 
-    model = User
     template_name = "account/step_4_account_setup_admin.html"
-    form_class = OnboardingCreateUserAdminForm
+    form_class = MemberRegistrationForm
     current_step = 4
+    account_type = GROUP_ADMIN
 
     def get_success_url(self) -> str:
         return reverse_lazy("step_account_setup_red_teamer", kwargs={"organization_code": self.organization.code})
@@ -584,26 +538,24 @@ class OnboardingAccountSetupAdminView(
         messages.add_message(self.request, messages.SUCCESS, success_message)
 
 
-@class_view_decorator(otp_required)
-class OnboardingAccountSetupRedTeamerView(
-    RegistrationBreadcrumbsMixin,
-    OnboardingAccountCreationMixin,
-):
-
+class OnboardingAccountSetupRedTeamerView(RegistrationBreadcrumbsMixin, OnboardingAccountCreationMixin):
     """
     Step 2: Create an redteamer account with redteam rights
     """
 
-    model = User
     template_name = "account/step_5_account_setup_red_teamer.html"
-    form_class = OnboardingCreateUserRedTeamerForm
+    form_class = MemberRegistrationForm
     current_step = 4
+    account_type = GROUP_REDTEAM
 
     def get_success_url(self, **kwargs):
         return reverse_lazy("step_account_setup_client", kwargs={"organization_code": self.organization.code})
 
     def form_valid(self, form):
         name = form.cleaned_data["name"]
+        trusted_clearance_level = form.cleaned_data.get("trusted_clearance_level")
+        if trusted_clearance_level and int(trusted_clearance_level) < DNS_REPORT_LEAST_CLEARANCE_LEVEL:
+            clearance_level_warning_dns_report(self.request, trusted_clearance_level)
         self.add_success_notification(name)
         return super().form_valid(form)
 
@@ -612,19 +564,18 @@ class OnboardingAccountSetupRedTeamerView(
         messages.add_message(self.request, messages.SUCCESS, success_message)
 
 
-@class_view_decorator(otp_required)
 class OnboardingAccountSetupClientView(RegistrationBreadcrumbsMixin, OnboardingAccountCreationMixin):
     """
     Step 3: Create a client account.
     """
 
-    model = User
     template_name = "account/step_6_account_setup_client.html"
-    form_class = OnboardingCreateUserClientForm
+    form_class = MemberRegistrationForm
     current_step = 4
+    account_type = GROUP_CLIENT
 
     def get_success_url(self, **kwargs):
-        return reverse_lazy("crisis_room")
+        return reverse_lazy("complete_onboarding", kwargs={"organization_code": self.organization.code})
 
     def form_valid(self, form):
         name = form.cleaned_data["name"]
@@ -636,18 +587,13 @@ class OnboardingAccountSetupClientView(RegistrationBreadcrumbsMixin, OnboardingA
         messages.add_message(self.request, messages.SUCCESS, success_message)
 
 
-@class_view_decorator(otp_required)
 class CompleteOnboarding(OrganizationView):
     """
     Complete onboarding for redteamers and superusers.
     """
 
     def get(self, request, *args, **kwargs):
-        member, _ = OrganizationMember.objects.get_or_create(user=request.user, organization=self.organization)
-        redteam_group = Group.objects.get(name="redteam")
-        if self.request.user.is_superuser and redteam_group not in self.request.user.groups.all():
-            redteam_group.user_set.add(self.request.user)
-            return redirect(reverse("step_introduction", kwargs={"organization_code": self.organization.code}))
-        member.onboarded = True
-        member.save()
+        self.organization_member.onboarded = True
+        self.organization_member.status = OrganizationMember.STATUSES.ACTIVE
+        self.organization_member.save()
         return redirect(reverse("crisis_room"))

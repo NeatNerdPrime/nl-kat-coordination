@@ -1,192 +1,201 @@
-import tempfile
-import time
+import json
+from multiprocessing import Manager
 from pathlib import Path
-from typing import List, Union, Optional
-from unittest import TestCase
 
-from pydantic import parse_raw_as
+import pytest
 
-from boefjes.app import SchedulerRuntimeManager
-from boefjes.clients.scheduler_client import SchedulerClientInterface, QueuePrioritizedItem, Queue, TaskStatus
+from boefjes.app import SchedulerWorkerManager, get_runtime_manager
 from boefjes.config import Settings
-from boefjes.job_models import BoefjeMeta, NormalizerMeta
-from boefjes.runtime_interfaces import Handler, RuntimeManager
-from tests.stubs import get_dummy_data
+from boefjes.runtime_interfaces import WorkerManager
+from tests.conftest import MockHandler, MockSchedulerClient
+from tests.loading import get_dummy_data
 
 
-class MockSchedulerClient(SchedulerClientInterface):
-    def __init__(self, boefje_responses: List[bytes], normalizer_responses: List[bytes], log_path: Path):
-        self.boefje_responses = boefje_responses
-        self.normalizer_responses = normalizer_responses
-        self.log_path = log_path
+def test_one_process(manager: SchedulerWorkerManager, item_handler: MockHandler) -> None:
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.BOEFJES)
 
-    def get_queues(self) -> List[Queue]:
-        return parse_raw_as(List[Queue], self.boefje_responses.pop(0))
+    items = item_handler.get_all()
+    assert len(items) == 2
+    assert items[0].boefje.id == "dns-records"
+    assert items[1].boefje.id == "dns-records"
 
-    def pop_item(self, queue: str) -> Optional[QueuePrioritizedItem]:
-        if RuntimeManager.Queue.BOEFJES.value in queue and self.boefje_responses:
-            return parse_raw_as(QueuePrioritizedItem, self.boefje_responses.pop(0))
+    patched_tasks = manager.scheduler_client.get_all_patched_tasks()
 
-        if RuntimeManager.Queue.NORMALIZERS.value in queue and self.normalizer_responses:
-            return parse_raw_as(QueuePrioritizedItem, self.normalizer_responses.pop(0))
-
-    def patch_task(self, task_id: str, status: TaskStatus) -> None:
-        with open(self.log_path, "a") as f:
-            f.write(f"{task_id},{status.value}\n")
-
-    def get_all_patched_tasks(self) -> List[List[str]]:
-        with open(self.log_path, "r") as f:
-            return [x.strip().split(",") for x in f]
+    assert len(patched_tasks) == 6
+    assert set(patched_tasks) == {
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014c", "running"),
+        ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014c", "completed"),
+        ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "failed"),
+    }
 
 
-class MockHandler(Handler):
-    def __init__(
-        self,
-        log_path: Path,
-        sleep_time: float = 0.0,
-        max_calls: int = 2,
-        exception=Exception,
-    ):
-        self.log_path = log_path
-        self.sleep_time = sleep_time
-        self.max_calls = max_calls
-        self.calls = 0
-        self.exception = exception
+def test_two_processes(manager: SchedulerWorkerManager, item_handler: MockHandler) -> None:
+    manager.settings.pool_size = 2
+    manager.task_queue = Manager().Queue()
 
-    def handle(self, item: Union[BoefjeMeta, NormalizerMeta]):
-        if self.calls >= self.max_calls:
-            raise self.exception()
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.BOEFJES)
 
-        self.calls += 1
+    items = item_handler.get_all()
+    assert len(items) == 2
 
-        with open(self.log_path, "a") as f:
-            f.write(f"{item.json()}\n")
-
-        time.sleep(self.sleep_time)
-
-    def get_all(self) -> List[Union[BoefjeMeta, NormalizerMeta]]:
-        with open(self.log_path, "r") as f:
-            f = [x for x in f]
-            return [parse_raw_as(Union[BoefjeMeta, NormalizerMeta], x) for x in f]
+    patched_tasks = manager.scheduler_client.get_all_patched_tasks()
+    assert set(patched_tasks) == {
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014c", "running"),
+        ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014c", "completed"),
+        ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "failed"),
+    }
 
 
-class AppTest(TestCase):
-    def setUp(self) -> None:
-        # This tests multiprocessing, so we use a file for mocking interprocess communication
-        self.tempdir = tempfile.TemporaryDirectory()
+def test_two_processes_exception(manager: SchedulerWorkerManager, item_handler: MockHandler, tmp_path) -> None:
+    manager.scheduler_client = MockSchedulerClient(
+        get_dummy_data("scheduler/queues_response.json"),
+        [get_dummy_data("scheduler/should_crash.json")],
+        [get_dummy_data("scheduler/pop_response_normalizer.json")],
+        tmp_path / "patch_task_log",
+    )
 
-        self.item_handler = MockHandler(Path(self.tempdir.name) / "item_log")
-        queues_response = get_dummy_data("scheduler/queues_response.json")
-        pop_response_boefje = get_dummy_data("scheduler/pop_response_boefje.json")
-        pop_response_normalizer = get_dummy_data("scheduler/pop_response_normalizer.json")
+    manager.settings.pool_size = 2
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.BOEFJES)
 
-        self.scheduler_client = MockSchedulerClient(
-            3 * [queues_response, pop_response_boefje],
-            [pop_response_normalizer],
-            Path(self.tempdir.name) / "patch_task_log",
-        )
+    assert item_handler.queue.empty()
+    assert manager.scheduler_client.log_path.exists()
 
-        def client_factory():
-            return self.scheduler_client
 
-        self.runtime = SchedulerRuntimeManager(
-            self.item_handler, client_factory, Settings(pool_size=1, poll_interval=0.01), "DEBUG"
-        )
+def test_two_processes_handler_exception(manager: SchedulerWorkerManager, item_handler: MockHandler, tmp_path) -> None:
+    manager.scheduler_client = MockSchedulerClient(
+        get_dummy_data("scheduler/queues_response.json"),
+        [get_dummy_data("scheduler/pop_response_boefje.json")] + 2 * [get_dummy_data("scheduler/should_crash.json")],
+        [get_dummy_data("scheduler/pop_response_normalizer.json")],
+        tmp_path / "patch_task_log",
+    )
 
-    def tearDown(self) -> None:
-        self.tempdir.cleanup()
+    manager.settings.pool_size = 2
+    manager.task_queue = Manager().Queue()
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.BOEFJES)
 
-    def test_one_process(self) -> None:
-        self.runtime.run(RuntimeManager.Queue.BOEFJES)
+    items = item_handler.get_all()
+    assert len(items) == 1
 
-        items = self.item_handler.get_all()
-        self.assertEqual(2, len(items))
-        self.assertEqual("dns-records", items[0].boefje.id)
-        self.assertEqual("dns-records", items[1].boefje.id)
+    patched_tasks = manager.scheduler_client.get_all_patched_tasks()
 
-        patched_tasks = self.scheduler_client.get_all_patched_tasks()
-        self.assertEqual(3, len(patched_tasks))
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[0])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[1])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[2])
+    # Handler starts raising an Exception from the second call onward. So each process picks up a task, of which the one
+    # with id 9071c9fd-2b9f-440f-a524-ef1ca4824fd4 crashes. Task 70da7d4f-f41f-4940-901b-d98a92e9014b will be picked up
+    # by the other process in parallel, and completes before the crash of the other task. Since one process completes,
+    # it pops the same crashing task 9071c9fd-2b9f-440f-a524-ef1ca4824fd4 from the queue to simplify the test.
 
-    def test_two_processes(self) -> None:
-        self.runtime.settings.pool_size = 2
-        self.item_handler.sleep_time = 0.1
+    # We expect the first two patches to set the task status to running of both task and then process 1 to finish, as
+    # the exception has been set up with a small delay.
+    assert len(patched_tasks) == 6
+    assert sorted(patched_tasks[:3]) == sorted(
+        [
+            ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),  # Process 1
+            ("70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"),  # Process 1
+            ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "running"),  # Process 2
+        ]
+    )
 
-        self.runtime.run(RuntimeManager.Queue.BOEFJES)
+    # The process completing status then to be set to completed/failed for both tasks.
+    assert sorted(patched_tasks[3:]) == sorted(
+        [
+            ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "running"),  # Process 1
+            ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "failed"),  # Process 2
+            ("9071c9fd-2b9f-440f-a524-ef1ca4824fd4", "failed"),  # Process 1
+        ]
+    )
 
-        items = self.item_handler.get_all()
-        self.assertEqual(4, len(items))
 
-        patched_tasks = self.scheduler_client.get_all_patched_tasks()
-        self.assertEqual(6, len(patched_tasks))
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[0])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[3])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[4])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[5])
+def test_two_processes_cleanup_unfinished_tasks(
+    manager: SchedulerWorkerManager, item_handler: MockHandler, tmp_path
+) -> None:
+    """
+    We push 2 slow tasks to the Queue, which will be popped by 2 workers, emptying the Queue and stalling the 2 workers.
+    Because the Queue is now empty, the manager will get 2 new tasks from the scheduler to push to the queue. But only
+    one will be pushed because we do not have any tasks from the scheduler anymore (triggering a KeyboardInterrupt to
+    crash the main process). Then the manager should clean up the running tasks by setting the status of the running
+    tasks to failed and push any tasks still on the Queue back to the scheduler.
+    """
 
-    def test_two_processes_exception(self) -> None:
-        self.runtime.settings.pool_size = 2
-        self.item_handler.max_calls = 0
+    manager.scheduler_client = MockSchedulerClient(
+        get_dummy_data("scheduler/queues_response.json"),
+        3 * [get_dummy_data("scheduler/pop_response_boefje.json")],
+        [],
+        tmp_path / "patch_task_log",
+    )
+    manager.settings.pool_size = 2
+    manager.task_queue = Manager().Queue()
 
-        self.runtime.run(RuntimeManager.Queue.BOEFJES)
+    item_handler.sleep_time = 200
 
-        self.assertFalse(self.item_handler.log_path.exists())
-        self.assertTrue(self.scheduler_client.log_path.exists())
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.BOEFJES)
 
-    def test_two_processes_late_exception(self) -> None:
-        self.runtime.settings.pool_size = 2
-        self.item_handler.max_calls = 1
+    items = item_handler.get_all()
+    assert len(items) == 0
 
-        self.runtime.run(RuntimeManager.Queue.BOEFJES)
+    patched_tasks = manager.scheduler_client.get_all_patched_tasks()
+    assert len(patched_tasks) == 3
 
-        items = self.item_handler.get_all()
-        self.assertEqual(2, len(items))
+    # Task was running but main process crashed intentionally and cleaned it up
+    assert set(patched_tasks) == {
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"),
+    }
 
-        patched_tasks = self.scheduler_client.get_all_patched_tasks()
-        self.assertEqual(6, len(patched_tasks))
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[0])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[1])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[2])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[3])
+    # Tasks (one with the same id) was still unhandled the queue and pushed back to the scheduler by the main process
+    assert manager.scheduler_client._pushed_items["70da7d4f-f41f-4940-901b-d98a92e9014b"].scheduler_id == "boefje-_dev"
+    assert json.loads(
+        manager.scheduler_client._pushed_items["70da7d4f-f41f-4940-901b-d98a92e9014b"].json()
+    ) == json.loads(get_dummy_data("scheduler/pop_response_boefje.json"))
 
-    def test_two_processes_handler_exception(self) -> None:
-        self.runtime.settings.pool_size = 2
-        self.item_handler.max_calls = 1
 
-        self.runtime.run(RuntimeManager.Queue.BOEFJES)
+def test_normalizer_queue(manager: SchedulerWorkerManager, item_handler: MockHandler) -> None:
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.NORMALIZERS)
 
-        items = self.item_handler.get_all()
-        self.assertEqual(2, len(items))
+    items = item_handler.get_all()
+    assert len(items) == 1
+    assert items[0].normalizer.id == "kat_dns_normalize"
 
-        patched_tasks = self.scheduler_client.get_all_patched_tasks()
-        self.assertEqual(6, len(patched_tasks))
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[0])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[1])
-        self.assertEqual(
-            ["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[2]
-        )  # Handler starts raising an Exception from the second call onward
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[3])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[4])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "failed"], patched_tasks[5])
 
-    def test_null(self) -> None:
-        """This tests ensures we test the behaviour when the scheduler client returns None for the pop_task method"""
-        self.item_handler.max_calls = 10
-        self.runtime.run(RuntimeManager.Queue.BOEFJES)
+def test_null(manager: SchedulerWorkerManager, tmp_path: Path, item_handler: MockHandler):
+    manager.scheduler_client = MockSchedulerClient(
+        get_dummy_data("scheduler/queues_response.json"),
+        3 * [get_dummy_data("scheduler/pop_response_boefje.json")],
+        [get_dummy_data("scheduler/pop_response_normalizer.json")],
+        tmp_path / "patch_task_log",
+        iterations_to_wait_for_exception=2,
+        sleep_time=0.3,
+    )
 
-        items = self.item_handler.get_all()
-        self.assertEqual(3, len(items))
+    with pytest.raises(KeyboardInterrupt):
+        manager.run(WorkerManager.Queue.BOEFJES)
 
-        patched_tasks = self.scheduler_client.get_all_patched_tasks()
-        self.assertEqual(3, len(patched_tasks))
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[0])
-        self.assertEqual(["70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"], patched_tasks[2])
+    items = item_handler.get_all()
+    patched_tasks = manager.scheduler_client.get_all_patched_tasks()
 
-    def test_normalizer_queue(self) -> None:
-        self.runtime.run(RuntimeManager.Queue.NORMALIZERS)
+    assert len(items) == 3
+    assert len(patched_tasks) == 6
+    assert set(patched_tasks) == {
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "running"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"),
+        ("70da7d4f-f41f-4940-901b-d98a92e9014b", "completed"),
+    }
 
-        items = self.item_handler.get_all()
-        self.assertEqual(1, len(items))
-        self.assertEqual("kat_dns_normalize", items[0].normalizer.id)
+
+def test_create_manager():
+    get_runtime_manager(Settings(), WorkerManager.Queue.BOEFJES, "INFO")
+    get_runtime_manager(Settings(), WorkerManager.Queue.NORMALIZERS, "INFO")

@@ -1,10 +1,12 @@
 {
-    "id": "kat_ssl_scan_normalize",
-    "consumes": [
-        "ssl-version"
-    ],
-    "produces": [
-        "KATFindingType",
-        "Finding"
-    ]
+  "id": "kat_ssl_scan_normalize",
+  "name": "SSL scan",
+  "description": "Parses SSL scan version data into findings.",
+  "consumes": [
+    "boefje/ssl-version"
+  ],
+  "produces": [
+    "KATFindingType",
+    "Finding"
+  ]
 }

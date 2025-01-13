@@ -1,44 +1,43 @@
-from typing import List
+from datetime import datetime, timezone
 
 from django.utils.translation import gettext_lazy as _
-
-from fmea.models import DEPARTMENTS
-from rocky.views.mixins import OOIBreadcrumbsMixin
-from rocky.views.ooi_view import BaseOOIDetailView
+from django.views.generic import TemplateView
 from tools.forms.ooi import OoiTreeSettingsForm
-from tools.ooi_helpers import (
-    get_ooi_types_from_tree,
-    filter_ooi_tree,
-    create_object_tree_item_from_ref,
-)
-from tools.view_helpers import get_ooi_url, Breadcrumb
+from tools.ooi_helpers import create_object_tree_item_from_ref, filter_ooi_tree, get_ooi_types_from_tree
+from tools.view_helpers import Breadcrumb, get_ooi_url
+
+from rocky.views.ooi_view import BaseOOIDetailView
 
 
-class OOITreeView(OOIBreadcrumbsMixin, BaseOOIDetailView):
+class OOITreeView(BaseOOIDetailView, TemplateView):
     template_name = "oois/ooi_tree.html"
     connector_form_class = OoiTreeSettingsForm
 
     def get_tree_dict(self):
         return create_object_tree_item_from_ref(self.tree.root, self.tree.store)
 
-    def get_filtered_tree(self, tree_dict):
+    def get_filtered_tree(self, tree_dict: dict) -> dict:
         filtered_types = self.request.GET.getlist("ooi_type", [])
         return filter_ooi_tree(tree_dict, filtered_types)
 
+    def count_observed_at_filter(self) -> int:
+        return 1 if datetime.now(timezone.utc).date() != self.observed_at.date() else 0
+
+    def count_active_filters(self):
+        count_depth_filter = len(self.request.GET.getlist("depth", []))
+        count_ooi_type_filter = len(self.request.GET.getlist("ooi_type", []))
+        return self.count_observed_at_filter() + count_depth_filter + count_ooi_type_filter
+
     def get_connector_form_kwargs(self):
+        kwargs = super().get_connector_form_kwargs()
+
         tree_dict = self.get_tree_dict()
-        ooi_types = get_ooi_types_from_tree(tree_dict, False)
+        ooi_types = get_ooi_types_from_tree(tree_dict, True)
+        kwargs.update({"ooi_types": ooi_types})
 
-        kwargs = {
-            "initial": {"ooi_type": ooi_types},
-            "ooi_types": ooi_types,
-        }
-
-        if "observed_at" in self.request.GET:
-            kwargs.update({"data": self.request.GET})
         return kwargs
 
-    def build_breadcrumbs(self) -> List[Breadcrumb]:
+    def build_breadcrumbs(self) -> list[Breadcrumb]:
         breadcrumbs = super().build_breadcrumbs()
         breadcrumbs.append(self.get_last_breadcrumb())
         return breadcrumbs
@@ -55,30 +54,22 @@ class OOITreeView(OOIBreadcrumbsMixin, BaseOOIDetailView):
         context["tree"] = self.get_filtered_tree(self.get_tree_dict())
         context["tree_view"] = self.request.GET.get("view", "condensed")
         context["observed_at_form"] = self.get_connector_form()
-
+        context["active_filters_counter"] = self.count_active_filters()
         return context
-
-    def setup(self, request, *args, **kwargs):
-        super().setup(request, *args, **kwargs)
-        self.depth = self.get_depth()
 
 
 class OOISummaryView(OOITreeView):
     template_name = "oois/ooi_summary.html"
 
     def get_last_breadcrumb(self):
-        return {
-            "url": get_ooi_url("ooi_summary", self.ooi.primary_key, self.organization.code),
-            "text": _("Summary"),
-        }
+        return {"url": get_ooi_url("ooi_summary", self.ooi.primary_key, self.organization.code), "text": _("Summary")}
 
 
 class OOIGraphView(OOITreeView):
     template_name = "graph-d3.html"
 
-    def get_filtered_tree(self, tree_dict):
+    def get_filtered_tree(self, tree_dict: dict) -> dict:
         filtered_tree = super().get_filtered_tree(tree_dict)
-
         return hydrate_tree(filtered_tree, self.organization.code)
 
     def get_last_breadcrumb(self):
@@ -87,17 +78,12 @@ class OOIGraphView(OOITreeView):
             "text": _("Graph Visualisation"),
         }
 
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context["departments"] = DEPARTMENTS
-        return context
 
-
-def hydrate_tree(tree, organization_code: str):
+def hydrate_tree(tree: dict, organization_code: str) -> dict:
     return hydrate_branch(tree, organization_code)
 
 
-def hydrate_branch(branch, organization_code: str):
+def hydrate_branch(branch: dict, organization_code: str) -> dict:
     branch["name"] = branch["tree_meta"]["location"] + "-" + branch["ooi_type"]
     branch["overlay_data"] = {"Type": branch["ooi_type"]}
     if branch["ooi_type"] == "Finding":

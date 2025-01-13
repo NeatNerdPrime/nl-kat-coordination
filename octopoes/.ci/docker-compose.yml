@@ -1,63 +1,70 @@
-version: "3.9"
-
 services:
-
   rabbitmq:
     restart: on-failure
-    image: "rabbitmq:3.9-management"
+    image: "docker.io/library/rabbitmq:3.12-management"
     ports:
       - "127.0.0.1:29003:15672"
       - "127.0.0.1:29004:5672"
     healthcheck:
-      test: [ "CMD", "rabbitmqctl", "status" ]
+      test: ["CMD", "rabbitmqctl", "status"]
       interval: 5s
-      retries: 10
+      retries: 4
     env_file:
       - ".ci/ci.env"
 
-  crux:
+  octopoes_integration:
+    build:
+      args:
+        ENVIRONMENT: dev
+      context: .
+    command: pytest tests/integration --timeout=300
+    depends_on:
+      - xtdb
+      - ci_octopoes
     env_file:
       - ".ci/ci.env"
-    entrypoint: ["clojure", "-J-Dlogback.configurationFile=resources/logback.xml", "-M", "-m", "xtdb.main"]
-    healthcheck:
-      test: [ "CMD", "python3", "/home/health_check.py", "http://localhost:3000/_xtdb/status"]
-      interval: 5s
-      retries: 10
-    image: "juxt/xtdb-standalone-rocksdb:1.21.0"
+
+  xtdb:
+    image: "ghcr.io/dekkers/xtdb-http-multinode:v1.1.0"
     ports:
       - "127.0.0.1:29002:3000"
-    restart: on-failure
-    volumes:
-      - ./.ci/health_check.py:/home/health_check.py
 
-  octopoes_api:
+  ci_octopoes:
     build:
       context: .
     command: uvicorn octopoes.api.api:app --host 0.0.0.0 --port 80
     depends_on:
       rabbitmq:
         condition: service_healthy
-      crux:
-        condition: service_healthy
-    ports:
-        - "127.0.0.1:29000:80"
+      xtdb:
+        condition: service_started
+      katalogus_mock:
+        condition: service_started
+      ci_octopoes_api_worker:
+        condition: service_started
     env_file:
       - ".ci/ci.env"
+    ports:
+      - "127.0.0.1:29000:80"
 
-  octopoes_api_worker:
+  ci_octopoes_api_worker:
     build:
       context: .
-    command: celery -A octopoes.tasks.tasks worker -E -B -s /tmp/celerybeat-schedule --loglevel=INFO
+    command: celery -A octopoes.tasks.tasks worker -E --loglevel=INFO
     depends_on:
       rabbitmq:
         condition: service_healthy
-      crux:
-        condition: service_healthy
+      xtdb:
+        condition: service_started
     env_file:
       - ".ci/ci.env"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
 
   katalogus_mock:
-    image: "wiremock/wiremock:2.34.0"
+    image: "docker.io/wiremock/wiremock:2.34.0"
     volumes:
       - ./.ci/wiremock:/home/wiremock
     ports:

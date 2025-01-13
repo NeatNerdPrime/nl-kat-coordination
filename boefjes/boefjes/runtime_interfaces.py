@@ -1,25 +1,24 @@
 from enum import Enum
-from typing import Union, Dict, Tuple
 
-from boefjes.job_models import BoefjeMeta, NormalizerMeta, NormalizerOutput
+from boefjes.job_models import BoefjeMeta, NormalizerMeta, NormalizerResults
 
 
 class Handler:
-    def handle(self, item: Union[BoefjeMeta, NormalizerMeta]):
+    def handle(self, item: BoefjeMeta | NormalizerMeta) -> None:
         raise NotImplementedError()
 
 
 class BoefjeJobRunner:
-    def run(self, boefje_meta: BoefjeMeta, environment: Dict[str, str]) -> Tuple[BoefjeMeta, Union[str, bytes]]:
+    def run(self, boefje_meta: BoefjeMeta, environment: dict[str, str]) -> list[tuple[set, bytes | str]]:
         raise NotImplementedError()
 
 
 class NormalizerJobRunner:
-    def run(self, normalizer_meta, raw) -> NormalizerOutput:
+    def run(self, normalizer_meta: NormalizerMeta, raw: bytes) -> NormalizerResults:
         raise NotImplementedError()
 
 
-class RuntimeManager:
+class WorkerManager:
     class Queue(Enum):
         BOEFJES = "boefje"
         NORMALIZERS = "normalizer"

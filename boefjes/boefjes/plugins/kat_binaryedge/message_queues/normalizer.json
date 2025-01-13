@@ -1,16 +1,18 @@
 {
-    "id": "kat_binaryedge_message_queues",
-    "consumes": [
-        "binaryedge"
-    ],
-    "produces": [
-        "KATFindingType",
-        "SoftwareInstance",
-        "Service",
-        "IPPort",
-        "Finding",
-        "Software",
-        "IPService",
-        "CVEFindingType"
-    ]
+  "id": "kat_binaryedge_message_queues",
+  "name": "BinaryEdge message queues",
+  "description": "Parses BinaryEdge data to check for message queues (mqtt) servers. Creates the finding 'EXPOSED-SOFTWARE' if mqtt servers are found.",
+  "consumes": [
+    "boefje/binaryedge"
+  ],
+  "produces": [
+    "KATFindingType",
+    "SoftwareInstance",
+    "Service",
+    "IPPort",
+    "Finding",
+    "Software",
+    "IPService",
+    "CVEFindingType"
+  ]
 }

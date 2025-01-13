@@ -5,8 +5,7 @@
     {
       "object_type": "Hostname",
       "network": "Network|internet",
-      "name": "example.com",
-      "fqdn": "Hostname|internet|example.com."
+      "name": "example.com"
     },
     {
       "object_type": "ResolvedHostname",
@@ -19,13 +18,13 @@
       "address": "1.1.1.1"
     },
     {
-        "object_type": "IPPort",
-        "address": "IPAddressV4|internet|1.1.1.1",
-        "protocol": "tcp",
-        "port": 80,
-        "state": "open"
+      "object_type": "IPPort",
+      "address": "IPAddressV4|internet|1.1.1.1",
+      "protocol": "tcp",
+      "port": 80,
+      "state": "open"
     }
   ],
   "valid_time": "2019-01-01T00:00:00+00:00",
-  "task_id": "1234"
+  "task_id": "532a22d4-9cbd-4151-bded-3a916816dd5e"
 }
