@@ -39,17 +39,13 @@ def _parse_ipv6(tokens):
 
     """
     match = str(tokens[0])
-    ipv6 = None
     try:
-        ipv6 = ipaddress.IPv6Address(match)
+        return str(ipaddress.IPv6Address(match))
     except ipaddress.AddressValueError:
         try:
-            ipv6 = ipaddress.IPv6Network(match, strict=False)
-        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
-            pass
-    if not ipv6:
-        raise ParseException("Non valid IPv6 address/network.")
-    return str(ipv6)
+            return str(ipaddress.IPv6Network(match, strict=False))
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as e:
+            raise ParseException("Non valid IPv6 address/network.") from e
 
 
 SP = White(ws=" ", exact=1).suppress()
@@ -88,10 +84,7 @@ def _check_domain_end(tokens):
 
     """
     domain_name = tokens[0]
-    if domain_name[-1] == ".":
-        domain_end = domain_name.split(".")[-2]
-    else:
-        domain_end = domain_name.split(".")[-1]
+    domain_end = domain_name.split(".")[-2] if domain_name[-1] == "." else domain_name.split(".")[-1]
     try:
         toplabel.parseString(domain_end)
     except ParseException:
@@ -103,12 +96,10 @@ macro_string = Combine(ZeroOrMore(macro_expand | macro_literal))
 
 domain_spec = macro_string.setParseAction(_check_domain_end)
 
-ip4_network = Regex(
-    r"((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}" "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])"
-)
+ip4_network = Regex(r"((25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)")
 
-ip6_cidr_length = CaselessLiteral("/") + Regex("(12[0-8]|1[01][0-9]|[1-9][0-9]|[0-9])")
-ip4_cidr_length = CaselessLiteral("/") + Regex("(3[0-2]|[12][0-9]|[0-9])")
+ip6_cidr_length = CaselessLiteral("/") + Regex(r"(12[0-8]|1[01]\d|[1-9]\d|\d)")
+ip4_cidr_length = CaselessLiteral("/") + Regex(r"(3[0-2]|[12]\d|\d)")
 dual_cidr_length = Optional(ip4_cidr_length) + Optional(CaselessLiteral("/") + ip6_cidr_length)
 
 unknown_modifier = Combine(name + CaselessLiteral("=") + macro_string)
@@ -134,9 +125,9 @@ a = Combine(
     + Optional(dual_cidr_length)
 )
 include = Combine(Optional(qualifier) + CaselessLiteral("include:") + domain_spec)
-all = Combine(Optional(qualifier) + CaselessLiteral("all"))
+all_ = Combine(Optional(qualifier) + CaselessLiteral("all"))
 
-mechanism = all | include | a | mx | ptr | ip4 | ip6 | exists
+mechanism = all_ | include | a | mx | ptr | ip4 | ip6 | exists
 directive = mechanism
 terms = ZeroOrMore(OneOrMore(SP) + (directive | modifier))
 
@@ -146,10 +137,6 @@ record = version + Group(terms).setResultsName("terms") + ZeroOrMore(SP) + Strin
 
 def parse(spf_record):
     try:
-        parsed = record.parseString(spf_record)
-    except ParseException:
-        parsed = None
-    except Exception as e:
-        print(f"{e.__class__.__name__}: {e}")
-        parsed = None
-    return parsed
+        return record.parseString(spf_record)
+    except Exception:
+        return None

@@ -26,9 +26,17 @@ internet,https://example.com/
 darknet,https://openkat.nl/""",
     # url without network
     b"raw\nhttps://example.com/",
+    b"""raw, clearance
+https://potato0.com/,0
+https://potato1.com/,1
+https://potato2.com/,2
+https://potato3.com/,3
+https://potato4.com/,4
+https://potato5.com/,5
+https://potato.com/,potato""",
 ]
-INPUT_TYPES = ["Hostname", "Hostname", "IPAddressV4", "IPAddressV6", "URL", "URL"]
-EXPECTED_OOI_COUNTS = [2, 2, 6, 4, 4, 2]
+INPUT_TYPES = ["Hostname", "Hostname", "IPAddressV4", "IPAddressV6", "URL", "URL", "URL"]
+EXPECTED_OOI_COUNTS = [2, 2, 6, 4, 4, 2, 14]
 
 
 def test_upload_csv_page(rf, redteam_member):
@@ -94,8 +102,7 @@ def test_upload_bad_decoding(rf, redteam_member, mock_bytes_client):
 
 
 @pytest.mark.parametrize(
-    "example_input, input_type, expected_ooi_counts",
-    zip(CSV_EXAMPLES, INPUT_TYPES, EXPECTED_OOI_COUNTS),
+    "example_input, input_type, expected_ooi_counts", zip(CSV_EXAMPLES, INPUT_TYPES, EXPECTED_OOI_COUNTS)
 )
 def test_upload_csv(
     rf,
@@ -115,7 +122,8 @@ def test_upload_csv(
     response = UploadCSV.as_view()(request, organization_code=redteam_member.organization.code)
 
     assert response.status_code == 302
-    assert mock_organization_view_octopoes().save_declaration.call_count == expected_ooi_counts
+    assert mock_organization_view_octopoes().save_declaration.call_count == expected_ooi_counts / 2
+    assert mock_organization_view_octopoes().save_many_declarations.call_count == 1
 
     task_id = mock_bytes_client().add_manual_proof.call_args[0][0]
     mock_bytes_client().add_manual_proof.assert_called_once_with(

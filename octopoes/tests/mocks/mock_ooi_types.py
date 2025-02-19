@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from enum import Enum
 from ipaddress import IPv4Address, IPv6Address
-from typing import Union, Optional, Literal
+from typing import Annotated, Literal
 
-from pydantic.types import conint
+from pydantic import Field
 
 from octopoes.models import OOI, Reference
 from octopoes.models.persistence import ReferenceField
@@ -17,31 +17,25 @@ class MockNetwork(OOI):
 
 
 class MockIPAddress(OOI):
-    address: Union[IPv4Address, IPv6Address]
+    address: IPv4Address | IPv6Address
     network: Reference = ReferenceField(MockNetwork)
 
     _natural_key_attrs = ["network", "address"]
-    _reverse_relation_names = {
-        "network": "ip_addresses",
-    }
+    _reverse_relation_names = {"network": "ip_addresses"}
 
 
 class MockIPAddressV4(MockIPAddress):
     object_type: Literal["MockIPAddressV4"] = "MockIPAddressV4"
     address: IPv4Address
 
-    _reverse_relation_names = {
-        "network": "ip_v4_addresses",
-    }
+    _reverse_relation_names = {"network": "ip_v4_addresses"}
 
 
 class MockIPAddressV6(MockIPAddress):
     object_type: Literal["MockIPAddressV6"] = "MockIPAddressV6"
     address: IPv6Address
 
-    _reverse_relation_names = {
-        "network": "ip_v6_addresses",
-    }
+    _reverse_relation_names = {"network": "ip_v6_addresses"}
 
 
 class MockProtocol(Enum):
@@ -59,9 +53,7 @@ class MockDNSZone(OOI):
     hostname: Reference = ReferenceField("MockHostname", max_inherit_scan_level=2)
 
     _natural_key_attrs = ["hostname"]
-    _reverse_relation_names = {
-        "hostname": "dns_zone",
-    }
+    _reverse_relation_names = {"hostname": "dns_zone"}
 
 
 class MockIPPort(OOI):
@@ -69,13 +61,11 @@ class MockIPPort(OOI):
 
     address: Reference = ReferenceField(MockIPAddress, max_issue_scan_level=0, max_inherit_scan_level=4)
     protocol: MockProtocol
-    port: conint(gt=0, lt=2**16)
-    state: Optional[MockPortState]
+    port: Annotated[int, Field(gt=0, lt=2**16)]
+    state: MockPortState | None
 
     _natural_key_attrs = ["address", "protocol", "port"]
-    _reverse_relation_names = {
-        "address": "ports",
-    }
+    _reverse_relation_names = {"address": "ports"}
 
 
 class MockIPService(OOI):
@@ -85,25 +75,19 @@ class MockIPService(OOI):
     service: str
 
     _natural_key_attrs = ["ip_port", "service"]
-    _reverse_relation_names = {
-        "ip_port": "ip_services",
-    }
+    _reverse_relation_names = {"ip_port": "ip_services"}
 
 
 class MockHostname(OOI):
     object_type: Literal["MockHostname"] = "MockHostname"
 
-    dns_zone: Optional[Reference] = ReferenceField(MockDNSZone, default=None, max_issue_scan_level=1)
+    dns_zone: Reference | None = ReferenceField(MockDNSZone, default=None, max_issue_scan_level=1)
     network: Reference = ReferenceField(MockNetwork)
     name: str
-    fqdn: Optional[Reference] = ReferenceField("MockHostname", default=None)
+    fqdn: Reference | None = ReferenceField("MockHostname", default=None)
 
     _natural_key_attrs = ["network", "name"]
-    _reverse_relation_names = {
-        "network": "hostnames",
-        "dns_zone": "hostnames",
-        "fqdn": "fqdn_of",
-    }
+    _reverse_relation_names = {"network": "hostnames", "dns_zone": "hostnames", "fqdn": "fqdn_of"}
 
 
 class MockResolvedHostname(OOI):
@@ -115,10 +99,7 @@ class MockResolvedHostname(OOI):
     address: Reference = ReferenceField(MockIPAddress, max_issue_scan_level=4, max_inherit_scan_level=0)
 
     _natural_key_attrs = ["hostname", "address"]
-    _reverse_relation_names = {
-        "hostname": "resolved_hostnames",
-        "address": "resolved_hostnames",
-    }
+    _reverse_relation_names = {"hostname": "resolved_hostnames", "address": "resolved_hostnames"}
 
 
 class MockDNSCNAMERecord(OOI):
@@ -129,10 +110,7 @@ class MockDNSCNAMERecord(OOI):
     target_hostname: Reference = ReferenceField(MockHostname)
 
     _natural_key_attrs = ["hostname", "value"]
-    _reverse_relation_names = {
-        "hostname": "dns_cname_records",
-        "target_hostname": "dns_cname_record_targets",
-    }
+    _reverse_relation_names = {"hostname": "dns_cname_records", "target_hostname": "dns_cname_record_targets"}
 
 
 class MockLabel(OOI):
@@ -140,15 +118,13 @@ class MockLabel(OOI):
 
     ooi: Reference = ReferenceField(OOI)
     label_id: str
-    label_text: Optional[str]
+    label_text: str | None = None
 
     @property
     def natural_key(self) -> str:
         return f"{self.ooi}|{self.label_id}"
 
-    _reverse_relation_names = {
-        "ooi": "labels",
-    }
+    _reverse_relation_names = {"ooi": "labels"}
 
 
 ALL_OOI_TYPES = {
@@ -162,7 +138,21 @@ ALL_OOI_TYPES = {
     MockDNSZone,
     MockResolvedHostname,
     MockDNSCNAMERecord,
+    MockLabel,
 }
 
+MockOOIType = (
+    MockNetwork
+    | MockIPAddressV4
+    | MockIPAddressV6
+    | MockIPPort
+    | MockHostname
+    | MockDNSZone
+    | MockResolvedHostname
+    | MockDNSCNAMERecord
+    | MockLabel
+)
+
+
 for ooi_type in ALL_OOI_TYPES:
-    ooi_type.update_forward_refs()
+    ooi_type.model_rebuild()

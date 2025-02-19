@@ -1,9 +1,11 @@
 {
-    "id": "kat_find_images_in_html",
-    "consumes": [
-        "text/html"
-    ],
-    "produces": [
-        "HTTPResource"
-    ]
+  "id": "kat_find_images_in_html",
+  "name": "Webpage analysis find images in html",
+  "description": "Parses websites to find images.",
+  "consumes": [
+    "text/html"
+  ],
+  "produces": [
+    "HTTPResource"
+  ]
 }

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Iterable, Callable, Union, Optional, Dict, Any, NewType, List
+from typing import Any, NewType
+from uuid import UUID
 
-from pydantic import BaseModel, Field
-from pydantic.datetime_parse import parse_datetime, StrBytesIntFloat
+from pydantic import AwareDatetime, BaseModel, Field
+from pydantic.v1.datetime_parse import parse_datetime
 
 RetrievalLink = NewType("RetrievalLink", str)
 SecureHash = NewType("SecureHash", str)
@@ -27,69 +28,72 @@ class HashingRepositoryReference(str, Enum):
     RFC3161 = "RFC3161"
 
 
-class TimezoneAwareDatetime(datetime):
-    @classmethod
-    def __get_validators__(cls) -> Iterable[Callable[[Union[datetime, StrBytesIntFloat]], datetime]]:
-        yield cls.validate
-
-    @classmethod
-    def validate(cls, value: Union[datetime, StrBytesIntFloat]) -> datetime:
-        parsed = parse_datetime(value)
-        if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
-            raise ValueError(f"{parsed} is not timezone aware")
-        return parsed
+def _validate_timezone_aware_datetime(value: datetime) -> datetime:
+    parsed = parse_datetime(value)
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ValueError(f"{parsed} is not timezone aware")
+    return parsed
 
 
 class MimeType(BaseModel):
     value: str
 
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __lt__(self, other: MimeType) -> bool:
+        return self.value < other.value
+
 
 class Job(BaseModel):
-    id: str
-    started_at: TimezoneAwareDatetime
-    ended_at: TimezoneAwareDatetime
+    id: UUID
+    started_at: AwareDatetime
+    ended_at: AwareDatetime
 
 
 class Boefje(BaseModel):
     id: str
-    version: Optional[str]
+    version: str | None = None
 
 
 class Normalizer(BaseModel):
     id: str
-    version: Optional[str]
+    version: str | None = None
 
 
 class BoefjeMeta(Job):
     boefje: Boefje
-    input_ooi: Optional[str]
-    arguments: Dict[str, Any]
+    input_ooi: str | None = None
+    arguments: dict[str, Any]
     organization: str
+    runnable_hash: str | None = None
+    environment: dict[str, str] | None = None
 
 
 class RawDataMeta(BaseModel):
     """Represents only the metadata of a RawData object, without its raw value. Used as an API response model."""
 
-    id: str
+    id: UUID
     boefje_meta: BoefjeMeta
-    mime_types: List[MimeType] = Field(default_factory=list)
+    mime_types: set[MimeType] = Field(default_factory=set)
 
     # These are set once the raw is saved
-    secure_hash: Optional[SecureHash]
-    hash_retrieval_link: Optional[RetrievalLink]
+    secure_hash: SecureHash | None = None
+    signing_provider_url: str | None = None
+    hash_retrieval_link: RetrievalLink | None = None
 
 
 class RawData(BaseModel):
     value: bytes
     boefje_meta: BoefjeMeta
-    mime_types: List[MimeType] = Field(default_factory=list)
+    mime_types: set[MimeType] = Field(default_factory=set)
 
     # These are set once the raw is saved
-    secure_hash: Optional[SecureHash]
-    hash_retrieval_link: Optional[RetrievalLink]
+    secure_hash: SecureHash | None = None
+    signing_provider_url: str | None = None
+    hash_retrieval_link: RetrievalLink | None = None
 
 
 class NormalizerMeta(Job):
-    raw_file_id: Optional[str]
-    boefje_meta: BoefjeMeta  # To be phased out?
+    raw_data: RawDataMeta
     normalizer: Normalizer

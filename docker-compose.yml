@@ -1,9 +1,7 @@
-version: "3.9"
-
 services:
   rabbitmq:
-    restart: on-failure
-    image: "rabbitmq:3.9-management"
+    restart: unless-stopped
+    image: "docker.io/library/rabbitmq:3.12-management"
     ports:
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
@@ -12,133 +10,183 @@ services:
       interval: 5s
       retries: 10
     env_file:
+      - .env-defaults
       - .env
 
   postgres:
-    restart: on-failure
-    image: postgres:15
+    restart: unless-stopped
+    image: docker.io/library/postgres:15
+    shm_size: 256MB
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD", "gosu", "postgres", "pg_isready"]
       interval: 10s
       retries: 10
+    # Django runserver does not limit the number of threads. We need to increase
+    # the maximum number of connection to make sure that we don't hit the limit.
+    command: -c max_connections=500
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
     env_file:
+      - .env-defaults
       - .env
     environment:
       APPS: "ROCKY BYTES KATALOGUS SCHEDULER"
 
   crux:
     image: "ghcr.io/dekkers/xtdb-http-multinode:main"
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - xtdb-data:/var/lib/xtdb
 
   octopoes_api:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
-      - crux
+      crux:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8001:80"
     build:
       context: octopoes/
+      target: dev
       args:
         ENVIRONMENT: dev
     command: uvicorn octopoes.api.api:app --host 0.0.0.0 --port 80 --reload --reload-dir /app/octopoes/octopoes
     env_file:
+      - .env-defaults
       - .env
     volumes:
       - ./octopoes:/app/octopoes
 
   octopoes_api_worker:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
-      - crux
-      - rabbitmq
+      crux:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
     build:
       context: octopoes/
+      target: dev
       args:
         ENVIRONMENT: dev
     command: worker-beat
     env_file:
+      - .env-defaults
       - .env
     volumes:
       - ./octopoes:/app/octopoes
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
 
   boefje:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - rabbitmq
       - bytes
+    ports:
+      - "127.0.0.1:8006:8000"
     build:
       context: .
       dockerfile: boefjes/Dockerfile
+      target: dev
       args:
         ENVIRONMENT: dev
     volumes:
       - ./boefjes:/app/boefjes
+      - ./octopoes/octopoes:/app/boefjes/octopoes
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
       replicas: 1
     command: boefje
     env_file:
+      - .env-defaults
       - .env
+    environment:
+      - BOEFJES_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-nl-kat-coordination}_default
 
   normalizer:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - rabbitmq
       - bytes
     build:
       context: .
       dockerfile: boefjes/Dockerfile
+      target: dev
       args:
         ENVIRONMENT: dev
     volumes:
       - ./boefjes:/app/boefjes
+      - ./octopoes/octopoes:/app/boefjes/octopoes
     deploy:
       replicas: 1
     command: normalizer
     env_file:
+      - .env-defaults
       - .env
 
   rocky:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
-      - octopoes_api_worker
-      - octopoes_api
       - postgres
-      - boefje
-      - normalizer
-      - katalogus
-      - scheduler
-      - keiko
     ports:
-      - "127.0.0.1:8000:80"
+      - "127.0.0.1:8000:8000"
     build:
       context: .
       dockerfile: rocky/Dockerfile
+      target: dev
       args:
         ENVIRONMENT: dev
-    command: python3 manage.py runserver 0.0.0.0:80
+    command: python3 manage.py runserver 0.0.0.0:8000
     volumes:
       - ./rocky:/app/rocky
+      - ./octopoes/octopoes:/app/rocky/octopoes
     env_file:
+      - .env-defaults
       - .env
+    environment:
+      - GITPOD_WORKSPACE_URL=${GITPOD_WORKSPACE_URL:-}
+      - GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}
+
+  rocky_worker:
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    build:
+      context: .
+      dockerfile: rocky/Dockerfile
+      target: dev
+      args:
+        ENVIRONMENT: dev
+    command: worker
+    volumes:
+      - ./rocky:/app/rocky
+      - ./octopoes/octopoes:/app/rocky/octopoes
+    env_file:
+      - .env-defaults
+      - .env
+    environment:
+      - GITPOD_WORKSPACE_URL=${GITPOD_WORKSPACE_URL:-}
+      - GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}
 
   bytes:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - postgres
     ports:
       - "127.0.0.1:8002:8000"
     build:
       context: bytes/
+      target: dev
       args:
         ENVIRONMENT: dev
     command: uvicorn bytes.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/bytes/bytes
@@ -146,59 +194,91 @@ services:
       - ./bytes:/app/bytes
       - bytes-data:/data
     env_file:
+      - .env-defaults
       - .env
 
   katalogus:
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - postgres
     build:
       context: .
       dockerfile: boefjes/Dockerfile
+      target: dev
       args:
         ENVIRONMENT: dev
-    command: uvicorn boefjes.katalogus.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/boefjes/boefjes/katalogus
+    command: uvicorn boefjes.katalogus.root:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/boefjes/boefjes/katalogus
     volumes:
       - ./boefjes:/app/boefjes
+      - ./octopoes/octopoes:/app/boefjes/octopoes
     ports:
       - "127.0.0.1:8003:8000"
     env_file:
+      - .env-defaults
       - .env
 
   scheduler:
-    restart: on-failure
+    restart: unless-stopped
     build:
       context: mula/
+      target: dev
       args:
         ENVIRONMENT: dev
     ports:
       - "127.0.0.1:8004:8000"
     env_file:
+      - .env-defaults
       - .env
     volumes:
       - ./mula:/app/scheduler
     depends_on:
       - postgres
+      - rabbitmq
       - boefje
       - normalizer
       - octopoes_api
       - katalogus
 
-  keiko:
-    restart: on-failure
-    build:
-      context: keiko/
-    ports:
-      - "127.0.0.1:8005:8000"
-    command: uvicorn keiko.app:api --host 0.0.0.0 --port 8000 --reload --reload-dir /app/keiko/keiko
-    env_file:
-      - .env
+  jaeger:
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    image: docker.io/jaegertracing/all-in-one:1.48
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: 9411
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
     volumes:
-      - ./keiko:/app/keiko
-      - keiko-reports:/reports
+      - jaeger-data:/badger
+    ports:
+      - "127.0.0.1:16686:16686"
+
+  prometheus:
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    image: docker.io/prom/prometheus:v2.50.1
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fc42:ca7::/64
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
 
 volumes:
   postgres-data:
   bytes-data:
-  keiko-reports:
   xtdb-data:
+  jaeger-data:
+  prometheus-data:

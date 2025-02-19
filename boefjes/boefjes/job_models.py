@@ -1,8 +1,11 @@
-import hashlib
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Union, Literal
+from typing import Annotated, Literal, TypeAlias
+from uuid import UUID
 
-from pydantic import BaseModel, Field, Extra, constr
+from pydantic import AwareDatetime, BaseModel, Field, StringConstraints
+
+from octopoes.models import DeclaredScanProfile
+from octopoes.models.types import OOIType
 
 
 class JobException(Exception):
@@ -13,12 +16,12 @@ class JobException(Exception):
 
 
 class Job(BaseModel):
-    id: str
-    started_at: Optional[datetime] = Field(default=None)
-    ended_at: Optional[datetime] = Field(default=None)
+    id: UUID
+    started_at: AwareDatetime | None = Field(default=None)
+    ended_at: AwareDatetime | None = Field(default=None)
 
     @property
-    def runtime(self) -> Optional[timedelta]:
+    def runtime(self) -> timedelta | None:
         if self.started_at is not None and self.ended_at is not None:
             return self.ended_at - self.started_at
         else:
@@ -28,34 +31,30 @@ class Job(BaseModel):
 class Boefje(BaseModel):
     """Identifier for Boefje in a BoefjeMeta"""
 
-    id: constr(min_length=1)
-    version: Optional[str] = Field(default=None)
+    id: Annotated[str, StringConstraints(min_length=1)]
+    version: str | None = Field(default=None)
 
 
 class Normalizer(BaseModel):
     """Identifier for Normalizer in a NormalizerMeta"""
 
-    id: constr(min_length=1)
-    version: Optional[str] = Field(default=None)
+    id: Annotated[str, StringConstraints(min_length=1)]
+    version: str | None = Field(default=None)
 
 
 class BoefjeMeta(Job):
     boefje: Boefje
-    input_ooi: Optional[str]
-    arguments: Dict = {}
+    input_ooi: str | None = None
+    arguments: dict = {}
     organization: str
-
-    @property
-    def parameterized_arguments_hash(self) -> str:
-        encoded_arguments = ",".join(f"{k}={v}" for k, v in self.arguments.items())
-
-        return hashlib.sha256(encoded_arguments.encode("utf-8")).hexdigest()
+    runnable_hash: str | None = None
+    environment: dict[str, str] | None = None
 
 
 class RawDataMeta(BaseModel):
-    id: str
+    id: UUID
     boefje_meta: BoefjeMeta
-    mime_types: List[Dict[str, str]]
+    mime_types: list[dict[str, str]]
 
 
 class NormalizerMeta(Job):
@@ -69,43 +68,36 @@ class ObservationsWithoutInputOOI(JobException):
             "Observations are yielded in the normalizer but no input ooi was found. "
             "Your boefje should either yield observations with a custom input"
             "or always run on a specified input ooi type.\n"
-            f"NormalizerMeta: {normalizer_meta.json(indent=3)}"
+            f"NormalizerMeta: {normalizer_meta.model_dump_json(indent=3)}"
         )
 
 
-class UnsupportedReturnTypeNormalizer(JobException):
-    def __init__(self, result_type: str):
-        super().__init__(f"The return type '{result_type}' is not supported")
-
-
 class InvalidReturnValueNormalizer(JobException):
-    def __init__(self, validation_msg: str):
-        super().__init__(f"Output dictionary in normalizer was invalid: {validation_msg}")
-
-
-class NormalizerPlainOOI(BaseModel):  # Validation of plain OOIs being returned from Normalizers
-    object_type: str
-
-    class Config:
-        allow_population_by_field_name = True
-        extra = Extra.allow
+    pass
 
 
 class NormalizerObservation(BaseModel):
     type: Literal["observation"] = "observation"
     input_ooi: str
-    results: List[NormalizerPlainOOI]
+    results: list[OOIType]
 
 
 class NormalizerDeclaration(BaseModel):
     type: Literal["declaration"] = "declaration"
-    ooi: NormalizerPlainOOI
+    ooi: OOIType
+    end_valid_time: datetime | None = None
 
 
-class NormalizerResult(BaseModel):  # Moves all validation logic to Pydantic
-    item: Union[NormalizerPlainOOI, NormalizerObservation, NormalizerDeclaration]
+class NormalizerAffirmation(BaseModel):
+    type: Literal["affirmation"] = "affirmation"
+    ooi: OOIType
 
 
-class NormalizerOutput(BaseModel):
-    observations: List[NormalizerObservation] = []
-    declarations: List[NormalizerDeclaration] = []
+class NormalizerResults(BaseModel):
+    observations: list[NormalizerObservation] = []
+    declarations: list[NormalizerDeclaration] = []
+    affirmations: list[NormalizerAffirmation] = []
+    scan_profiles: list[DeclaredScanProfile] = []
+
+
+NormalizerOutput: TypeAlias = OOIType | NormalizerDeclaration | NormalizerAffirmation | DeclaredScanProfile

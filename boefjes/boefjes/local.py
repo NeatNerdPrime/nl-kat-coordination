@@ -1,48 +1,56 @@
-import logging
 import os
-from typing import List, Dict, Union, Tuple, Any
+from collections.abc import Iterable
 
-from octopoes.models import OOI
-from pydantic import ValidationError
+import structlog
 
 from boefjes.job_models import (
     BoefjeMeta,
-    NormalizerMeta,
-    NormalizerOutput,
-    NormalizerPlainOOI,
-    ObservationsWithoutInputOOI,
-    NormalizerObservation,
-    NormalizerDeclaration,
-    UnsupportedReturnTypeNormalizer,
     InvalidReturnValueNormalizer,
-    NormalizerResult,
+    NormalizerAffirmation,
+    NormalizerDeclaration,
+    NormalizerMeta,
+    NormalizerObservation,
+    NormalizerOutput,
+    NormalizerResults,
+    ObservationsWithoutInputOOI,
 )
-from boefjes.katalogus.local_repository import LocalPluginRepository
-from boefjes.runtime_interfaces import BoefjeJobRunner, NormalizerJobRunner, JobRuntimeError
+from boefjes.local_repository import LocalPluginRepository
+from boefjes.runtime_interfaces import BoefjeJobRunner, JobRuntimeError, NormalizerJobRunner
+from octopoes.models import OOI, DeclaredScanProfile
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class TemporaryEnvironment:
+    """Context manager that temporarily clears the environment vars and restores it after exiting the context"""
+
     def __init__(self):
         self._original_environment = os.environ.copy()
 
     def __enter__(self):
+        os.environ.clear()
         return os.environ
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        os.environ = self._original_environment
+        os.environ.clear()
+        os.environ.update(self._original_environment)
 
 
 class LocalBoefjeJobRunner(BoefjeJobRunner):
     def __init__(self, local_repository: LocalPluginRepository):
         self.local_repository = local_repository
 
-    def run(self, boefje_meta: BoefjeMeta, environment: Dict[str, str]) -> List[Tuple[set, Union[bytes, str]]]:
-        logger.info("Running local boefje plugin")
+    def run(self, boefje_meta: BoefjeMeta, environment: dict[str, str]) -> list[tuple[set, bytes | str]]:
+        logger.debug("Running local boefje plugin")
 
         boefjes = self.local_repository.resolve_boefjes()
         boefje_resource = boefjes[boefje_meta.boefje.id]
+
+        if not boefje_resource.module:
+            if boefje_resource.boefje.oci_image:
+                raise JobRuntimeError("Trying to run OCI image boefje locally")
+            else:
+                raise JobRuntimeError("Boefje doesn't have OCI image or main.py")
 
         with TemporaryEnvironment() as temporary_environment:
             temporary_environment.update(environment)
@@ -56,56 +64,60 @@ class LocalNormalizerJobRunner(NormalizerJobRunner):
     def __init__(self, local_repository: LocalPluginRepository):
         self.local_repository = local_repository
 
-    def run(self, normalizer_meta, raw) -> NormalizerOutput:
-        logger.info("Running local normalizer plugin")
+    def run(self, normalizer_meta: NormalizerMeta, raw: bytes) -> NormalizerResults:
+        logger.debug("Running local normalizer plugin")
 
         normalizers = self.local_repository.resolve_normalizers()
         normalizer = normalizers[normalizer_meta.normalizer.id]
 
         try:
-            results = normalizer.module.run(normalizer_meta, raw)
+            try:
+                input_ooi = normalizer_meta.raw_data.boefje_meta.arguments["input"]
+            except KeyError:
+                if normalizer_meta.raw_data.boefje_meta.input_ooi:
+                    input_ooi = {"primary_key": normalizer_meta.raw_data.boefje_meta.input_ooi}
+                else:
+                    input_ooi = {}
+
+            results = normalizer.module.run(input_ooi, raw)
         except BaseException as e:
             raise JobRuntimeError("Normalizer failed") from e
 
         return self._parse_results(normalizer_meta, results)
 
-    def _parse_results(self, normalizer_meta: NormalizerMeta, results: List[Any]) -> NormalizerOutput:
-        parsed: List[NormalizerResult] = [self._parse(result) for result in results]
+    def _parse_results(self, normalizer_meta: NormalizerMeta, results: Iterable[NormalizerOutput]) -> NormalizerResults:
+        oois = []
+        declarations = []
+        affirmations = []
+        scan_profiles = []
 
-        if oois := [ooi for ooi in parsed if isinstance(ooi.item, NormalizerPlainOOI)]:
+        for result in results:
+            match result:
+                case OOI():
+                    oois.append(result)
+                case NormalizerDeclaration():
+                    declarations.append(result)
+                case NormalizerAffirmation():
+                    affirmations.append(result)
+                case DeclaredScanProfile():
+                    scan_profiles.append(result)
+                case _:
+                    raise InvalidReturnValueNormalizer(
+                        f"Normalizer returned object of incorrect type: {result.__class__.__name__}"
+                    )
+
+        if oois:
             if not normalizer_meta.raw_data.boefje_meta.input_ooi:
                 raise ObservationsWithoutInputOOI(normalizer_meta)
 
-            # For both compatibility and ease of use, this makes sure we support normalizers only returning OOI dicts.
-            parsed.append(
-                NormalizerResult(
-                    item=NormalizerObservation(
-                        type="observation",
-                        input_ooi=normalizer_meta.raw_data.boefje_meta.input_ooi,
-                        results=[result.item for result in oois],
-                    )
+            observations = [
+                NormalizerObservation(
+                    type="observation", input_ooi=normalizer_meta.raw_data.boefje_meta.input_ooi, results=oois
                 )
-            )
+            ]
+        else:
+            observations = []
 
-        observations = [result.item for result in parsed if isinstance(result.item, NormalizerObservation)]
-
-        if observations and not normalizer_meta.raw_data.boefje_meta.input_ooi:
-            raise ObservationsWithoutInputOOI(normalizer_meta)
-
-        return NormalizerOutput(
-            observations=observations,
-            declarations=[result.item for result in parsed if isinstance(result.item, NormalizerDeclaration)],
+        return NormalizerResults(
+            observations=observations, declarations=declarations, affirmations=affirmations, scan_profiles=scan_profiles
         )
-
-    @staticmethod
-    def _parse(result: Any) -> NormalizerResult:
-        if not isinstance(result, dict):  # Must be an OOI. This should be phased out together with Octopoes
-            if not isinstance(result, OOI):
-                raise UnsupportedReturnTypeNormalizer(str(type(result)))
-
-            result = result.dict()
-
-        try:
-            return NormalizerResult(item=result)
-        except ValidationError as e:
-            raise InvalidReturnValueNormalizer(e.json())

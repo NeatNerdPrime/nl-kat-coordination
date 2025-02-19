@@ -1,6 +1,6 @@
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import alembic.config
 import pytest
@@ -8,31 +8,36 @@ from pydantic import ValidationError
 from sqlalchemy.orm import sessionmaker
 from starlette.testclient import TestClient
 
+from bytes.config import Settings
+from bytes.database.db import SQL_BASE, get_engine
+from bytes.database.sql_meta_repository import SQLMetaDataRepository
 from bytes.rabbitmq import RabbitMQEventManager
+from bytes.raw.file_raw_repository import FileRawRepository
+from bytes.raw.middleware import IdentityMiddleware, NaclBoxMiddleware
+from bytes.repositories.hash_repository import HashRepository
+from bytes.timestamping.in_memory import InMemoryHashRepository
+from bytes.timestamping.pastebin import PastebinHashRepository
 from bytes.timestamping.rfc3161 import RFC3161HashRepository
 from tests.client import BytesAPIClient
-from bytes.config import Settings
-from bytes.timestamping.pastebin import PastebinHashRepository
-from bytes.timestamping.in_memory import InMemoryHashRepository
-from bytes.raw.file_raw_repository import FileRawRepository
-from bytes.raw.middleware import NaclBoxMiddleware, IdentityMiddleware
-from bytes.repositories.hash_repository import HashRepository
-from bytes.database.db import get_engine, SQL_BASE
-from bytes.database.sql_meta_repository import SQLMetaDataRepository
 
 
 @pytest.fixture
-def settings():
+def settings(tmpdir):
+    env_path = Path(__file__).parent.parent / ".ci" / ".env.test"
     try:
-        return Settings()
+        return Settings(data_dir=Path(tmpdir))
     except ValidationError:  # test is probably being run outside the container setup
-        with open(Path(__file__).parent.parent / ".ci" / ".env.test") as f:
-            lines = [line.strip().split("=") for line in f.readlines() if line.strip() and line.strip()[-1] != "="]
+        with env_path.open() as f:
+            lines = [
+                line.strip().split("=")
+                for line in f.readlines()
+                if line.strip() and line.strip()[-1] != "=" and not line.startswith("#")
+            ]
 
             for key, val in lines:
                 os.environ[key] = val
 
-        return Settings()
+        return Settings(data_dir=Path(tmpdir), _env_file=env_path)
 
 
 @pytest.fixture
@@ -44,27 +49,20 @@ def test_client(settings: Settings) -> TestClient:
 
 @pytest.fixture
 def nacl_middleware(settings: Settings) -> NaclBoxMiddleware:
-    return NaclBoxMiddleware(kat_private=settings.kat_private_key_b64, vws_public=settings.vws_public_key_b64)
+    return NaclBoxMiddleware(kat_private=settings.private_key_b64, vws_public=settings.public_key_b64)
 
 
 @pytest.fixture
-def hash_repository(settings: Settings) -> HashRepository:
+def pastebin_hash_repository(settings: Settings) -> HashRepository:
     return PastebinHashRepository(api_dev_key=settings.pastebin_api_dev_key)
 
 
 @pytest.fixture
-def mock_hash_repository(rfc3616_repository: RFC3161HashRepository, settings: Settings) -> HashRepository:
-    if settings.rfc3161_provider:
-        return rfc3616_repository
+def mock_hash_repository(settings: Settings) -> HashRepository:
+    if settings.rfc3161_cert_file and settings.rfc3161_provider:
+        return RFC3161HashRepository(settings.rfc3161_cert_file.read_bytes(), str(settings.rfc3161_provider))
 
-    return InMemoryHashRepository()
-
-
-@pytest.fixture
-def rfc3616_repository(settings: Settings) -> HashRepository:
-    assert settings.rfc3161_cert_file and settings.rfc3161_provider
-
-    return RFC3161HashRepository(settings.rfc3161_cert_file.read_bytes(), settings.rfc3161_provider)
+    return InMemoryHashRepository(signing_provider_url="https://test")
 
 
 @pytest.fixture
@@ -74,7 +72,7 @@ def meta_repository(
     alembicArgs = ["--config", "/app/bytes/bytes/alembic.ini", "--raiseerr", "upgrade", "head"]
     alembic.config.main(argv=alembicArgs)
 
-    engine = get_engine(settings.bytes_db_uri)
+    engine = get_engine(db_uri=str(settings.db_uri), pool_size=settings.db_connection_pool_size)
     session = sessionmaker(bind=engine)()
 
     yield SQLMetaDataRepository(session, raw_repository, mock_hash_repository, settings)
@@ -82,7 +80,7 @@ def meta_repository(
     session.commit()
 
     sessionmaker(bind=engine, autocommit=True)().execute(
-        ";".join([f"TRUNCATE TABLE {t} CASCADE" for t in SQL_BASE.metadata.tables.keys()])
+        ";".join([f"TRUNCATE TABLE {t} CASCADE" for t in SQL_BASE.metadata.tables])
     )
 
 
@@ -91,15 +89,14 @@ def bytes_api_client(settings) -> Iterator[BytesAPIClient]:
     alembicArgs = ["--config", "/app/bytes/bytes/alembic.ini", "--raiseerr", "upgrade", "head"]
     alembic.config.main(argv=alembicArgs)
 
-    yield BytesAPIClient(
-        "http://ci_bytes:8000",
-        settings.bytes_username,
-        settings.bytes_password,
-    )
+    client = BytesAPIClient("http://ci_bytes:8000", settings.username, settings.password)
+    client.login()
 
-    sessionmaker(bind=get_engine(settings.bytes_db_uri), autocommit=True)().execute(
-        ";".join([f"TRUNCATE TABLE {t} CASCADE" for t in SQL_BASE.metadata.tables.keys()])
-    )
+    yield client
+
+    sessionmaker(
+        bind=get_engine(str(settings.db_uri), pool_size=settings.db_connection_pool_size), autocommit=True
+    )().execute(";".join([f"TRUNCATE TABLE {t} CASCADE" for t in SQL_BASE.metadata.tables]))
 
 
 @pytest.fixture
@@ -108,5 +105,8 @@ def raw_repository(tmp_path: Path) -> FileRawRepository:
 
 
 @pytest.fixture
-def event_manager(settings: Settings) -> RabbitMQEventManager:
-    return RabbitMQEventManager(settings.queue_uri)
+def event_manager(settings: Settings) -> Iterator[RabbitMQEventManager]:
+    manager = RabbitMQEventManager(str(settings.queue_uri))
+    manager.channel.queue_delete("raw_file_received")
+
+    yield manager

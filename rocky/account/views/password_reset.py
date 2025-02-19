@@ -6,7 +6,7 @@ from django.urls.base import reverse_lazy
 from django.utils.translation import gettext_lazy as _
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from account.forms import SetPasswordForm, PasswordResetForm
+from account.forms import PasswordResetForm, SetPasswordForm
 
 
 class PasswordResetView(auth_views.PasswordResetView):
@@ -23,14 +23,8 @@ class PasswordResetView(auth_views.PasswordResetView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["breadcrumbs"] = [
-            {
-                "url": reverse("login"),
-                "text": _("Login"),
-            },
-            {
-                "url": reverse("password_reset"),
-                "text": _("Reset password"),
-            },
+            {"url": reverse("login"), "text": _("Login")},
+            {"url": reverse("password_reset"), "text": _("Reset password")},
         ]
 
         return context
@@ -43,10 +37,7 @@ class PasswordResetView(auth_views.PasswordResetView):
         return super().form_valid(form)
 
     def is_smtp_valid(self):
-        smtp_credentials = [
-            settings.EMAIL_HOST,
-            settings.EMAIL_PORT,
-        ]
+        smtp_credentials = [settings.EMAIL_HOST, settings.EMAIL_PORT]
         return not ("" in smtp_credentials or None in smtp_credentials)
 
     def add_error_notification(self):
@@ -60,7 +51,7 @@ class PasswordResetView(auth_views.PasswordResetView):
 
     def add_success_notification(self):
         success_message = (
-            "We've emailed you instructions for setting your password. " "You should receive the email shortly!"
+            "We've emailed you instructions for setting your password. You should receive the email shortly!"
         )
         messages.add_message(self.request, messages.SUCCESS, success_message)
 

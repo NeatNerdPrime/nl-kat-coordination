@@ -1,26 +1,24 @@
 import re
-
+from ipaddress import IPv6Address, ip_address
 from os import getenv
-from ipaddress import ip_address, IPv6Address
-from typing import List, Tuple, Union
 
 import docker
 
 from boefjes.job_models import BoefjeMeta
 
 NMAP_IMAGE = "instrumentisto/nmap:latest"
-NMAP_VALID_PORTS = (
+NMAP_VALID_PORTS = re.compile(
     "\\s*([TUSP]:)?(\\d+|[a-z*?]+|(\\[?\\d*-\\d*\\]?))(,(([TUSP]:)|\\s)?(\\d+|[a-z*?]+|(\\[?\\d*-\\d*\\]?)))*"
 )
 
 
-def run_nmap(args: List[str]) -> str:
+def run_nmap(args: list[str]) -> str:
     """Run Nmap in Docker."""
     client = docker.from_env()
     return client.containers.run(NMAP_IMAGE, args, remove=True).decode()
 
 
-def build_nmap_arguments(host: str, ports: str) -> List[str]:
+def build_nmap_arguments(host: str, ports: str | None) -> list[str]:
     """Build nmap arguments from the hosts IP with the required ports."""
     ip = ip_address(host)
     args = ["nmap", "-T4", "-Pn", "-r", "-v10", "-sV", "-sS", "-sU", f"-p{validate_ports(ports=ports)}"]
@@ -31,10 +29,7 @@ def build_nmap_arguments(host: str, ports: str) -> List[str]:
     return args
 
 
-def validate_ports(
-    ports,
-    valid=re.compile(NMAP_VALID_PORTS),
-) -> str:
+def validate_ports(ports: str | None) -> str:
     """Returns ports argument if valid. Double slashes are for flake8 W605.
 
     A valid port is:
@@ -57,16 +52,13 @@ def validate_ports(
     """
     if ports is None:
         raise ValueError('"PORTS" argument is not specified.')
-    if valid.fullmatch(ports) is None:
+    if NMAP_VALID_PORTS.fullmatch(ports) is None:
         raise ValueError(f'Invalid PORTS argument "{ports}"')
     return ports
 
 
-def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
+def run(boefje_meta: BoefjeMeta) -> list[tuple[set, bytes | str]]:
     """Build Nmap arguments and return results to normalizer."""
     return [
-        (
-            set(),
-            run_nmap(build_nmap_arguments(host=boefje_meta.arguments["input"]["address"], ports=getenv("PORTS"))),
-        )
+        (set(), run_nmap(build_nmap_arguments(host=boefje_meta.arguments["input"]["address"], ports=getenv("PORTS"))))
     ]

@@ -1,5 +1,5 @@
-Introduction
-############
+How does it work?
+#################
 
 Contains introduction into OpenKAT
 
@@ -8,6 +8,5 @@ Contains introduction into OpenKAT
    :caption: Contents
 
    intro
-   howdoesitwork
-   usermanual
-   makeyourown
+   how-does-it-work
+   make-your-own

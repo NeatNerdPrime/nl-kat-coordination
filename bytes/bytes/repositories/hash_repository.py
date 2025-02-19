@@ -13,3 +13,8 @@ class HashRepository:
         """Verify that the external party has seen the hash"""
 
         raise NotImplementedError()
+
+    def get_signing_provider_url(self) -> str | None:
+        """Get the specific signing provider url"""
+
+        raise NotImplementedError()

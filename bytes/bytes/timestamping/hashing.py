@@ -1,19 +1,16 @@
 import hashlib
-import logging
 from typing import Any
 
-from bytes.models import (
-    HashingAlgorithm,
-    RawData,
-    TimezoneAwareDatetime,
-    SecureHash,
-)
+import structlog
+from pydantic import AwareDatetime
 
-logger = logging.getLogger(__name__)
+from bytes.models import HashingAlgorithm, RawData, SecureHash
+
+logger = structlog.get_logger(__name__)
 
 
 def hash_data(
-    data: RawData, datetime: TimezoneAwareDatetime, hash_algo: HashingAlgorithm = HashingAlgorithm.SHA512
+    data: RawData, datetime: AwareDatetime, hash_algo: HashingAlgorithm = HashingAlgorithm.SHA512
 ) -> SecureHash:
     """Hash the raw data"""
     timestamp_bytes = str(datetime.timestamp()).encode("utf-8")

@@ -1,48 +1,60 @@
 import uuid
 from datetime import datetime
-from typing import Optional, Any, List
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
-from octopoes.models import Reference, OOI
-from octopoes.models.datetime import TimezoneAwareDatetime
-from octopoes.models.types import OOIType
+from octopoes.models import Reference
+from octopoes.models.types import ConcreteOOIType, OOIType
 
 
 class ServiceHealth(BaseModel):
     service: str
     healthy: bool = False
-    version: Optional[str] = None
+    version: str | None = None
     additional: Any = None
-    results: List["ServiceHealth"] = []
+    results: list["ServiceHealth"] = Field(default_factory=list)
 
 
-ServiceHealth.update_forward_refs()
+ServiceHealth.model_rebuild()
 
 
 class _BaseObservation(BaseModel):
     method: str
     source: Reference
-    result: List[OOIType]
-    valid_time: TimezoneAwareDatetime
-    task_id: str
+    source_method: str | None
+    result: list[OOIType]
+    valid_time: AwareDatetime
+    task_id: uuid.UUID
 
 
 # Connector models (more generic)
 class Observation(_BaseObservation):
     """Used by Octopoes Connector to describe request body"""
 
-    result: List[OOI]
+    result: list[OOIType]
     valid_time: datetime
 
 
 class Declaration(BaseModel):
     """Used by Octopoes Connector to describe request body"""
 
-    ooi: OOI
+    ooi: OOIType
     valid_time: datetime
-    method: Optional[str]
-    task_id: Optional[str]
+    end_valid_time: datetime | None = None
+    method: str | None = None
+    source_method: str | None = None
+    task_id: uuid.UUID | None = None
+
+
+class Affirmation(BaseModel):
+    """Used by Octopoes Connector to describe request body"""
+
+    ooi: OOIType
+    valid_time: datetime
+    method: str | None = None
+    source_method: str | None = None
+    task_id: uuid.UUID | None = None
 
 
 class ScanProfileDeclaration(BaseModel):
@@ -51,18 +63,34 @@ class ScanProfileDeclaration(BaseModel):
     valid_time: datetime
 
 
+ValidatedOOIType = Annotated[ConcreteOOIType, Field(discriminator="object_type")]
+
+
 # API models (timezone validation and pydantic parsing)
 class ValidatedObservation(_BaseObservation):
     """Used by Octopoes API to validate and parse correctly"""
 
-    result: List[OOIType]
-    valid_time: TimezoneAwareDatetime
+    result: list[ValidatedOOIType]
+    valid_time: AwareDatetime
+    source_method: str | None = None
 
 
 class ValidatedDeclaration(BaseModel):
     """Used by Octopoes API to validate and parse correctly"""
 
-    ooi: OOIType
-    valid_time: TimezoneAwareDatetime
-    method: Optional[str] = "manual"
-    task_id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
+    ooi: ValidatedOOIType
+    valid_time: AwareDatetime
+    end_valid_time: AwareDatetime | None = None
+    method: str | None = "manual"
+    source_method: str | None = None
+    task_id: uuid.UUID | None = Field(default_factory=uuid.uuid4)
+
+
+class ValidatedAffirmation(BaseModel):
+    """Used by Octopoes API to validate and parse correctly"""
+
+    ooi: ValidatedOOIType
+    valid_time: AwareDatetime
+    method: str | None = "hydration"
+    source_method: str | None = None
+    task_id: uuid.UUID | None = Field(default_factory=uuid.uuid4)

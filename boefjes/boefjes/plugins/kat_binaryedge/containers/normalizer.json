@@ -1,16 +1,18 @@
 {
-    "id": "kat_binaryedge_containers",
-    "consumes": [
-        "binaryedge"
-    ],
-    "produces": [
-        "KATFindingType",
-        "SoftwareInstance",
-        "Service",
-        "IPPort",
-        "Finding",
-        "Software",
-        "IPService",
-        "CVEFindingType"
-    ]
+  "id": "kat_binaryedge_containers",
+  "name": "BinaryEdge containers",
+  "description": "Parse BinaryEdge data to check if Kubernetes hosts have any vulnerabilities. Creates 'VERIFIED-VULNERABILITY' findings.",
+  "consumes": [
+    "boefje/binaryedge"
+  ],
+  "produces": [
+    "KATFindingType",
+    "SoftwareInstance",
+    "Service",
+    "IPPort",
+    "Finding",
+    "Software",
+    "IPService",
+    "CVEFindingType"
+  ]
 }

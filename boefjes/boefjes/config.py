@@ -1,48 +1,141 @@
-from enum import Enum
-
+import logging
+import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Literal
 
-from pydantic import BaseSettings, AnyHttpUrl, PostgresDsn
+from pydantic import AnyHttpUrl, Field, FilePath, IPvAnyAddress, PostgresDsn, conint
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings.sources import EnvSettingsSource
+
+from boefjes.models import EncryptionMiddleware
+
+BASE_DIR: Path = Path(__file__).parent.resolve()
+
+# Set base dir to something generic when compiling environment docs
+if os.getenv("DOCS"):
+    BASE_DIR = Path("../")
 
 
-class RuntimeConfiguration(Enum):
-    LOCAL = "local"
+class BackwardsCompatibleEnvSettings(EnvSettingsSource):
+    backwards_compatibility_mapping = {
+        "BOEFJES_BOEFJE_API_HOST": "BOEFJES_API_HOST",
+        "BOEFJES_BOEFJE_API_PORT": "BOEFJES_API_PORT",
+        "BOEFJE_API": "BOEFJES_API",
+        "BOEFJE_DOCKER_NETWORK": "BOEFJES_DOCKER_NETWORK",
+        "LOG_CFG": "BOEFJES_LOG_CFG",
+        "ENCRYPTION_MIDDLEWARE": "BOEFJES_ENCRYPTION_MIDDLEWARE",
+        "KATALOGUS_PRIVATE_KEY_B64": "BOEFJES_KATALOGUS_PRIVATE_KEY",
+        "KATALOGUS_PUBLIC_KEY_B64": "BOEFJES_KATALOGUS_PUBLIC_KEY",
+    }
+
+    def __call__(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        env_vars = {k.lower(): v for k, v in os.environ.items()}
+        env_prefix = self.settings_cls.model_config.get("env_prefix", "").lower()
+
+        for old_name, new_name in self.backwards_compatibility_mapping.items():
+            old_name, new_name = old_name.lower(), new_name.lower()
+
+            # New variable not explicitly set through env,
+            # ...but old variable has been explicitly set through env
+            if new_name not in env_vars and old_name in env_vars:
+                logging.warning("Deprecation: %s is deprecated, use %s instead", old_name.upper(), new_name.upper())
+                d[new_name[len(env_prefix) :]] = env_vars[old_name]
+
+        return d
 
 
 class Settings(BaseSettings):
-    base_dir: Path = Path(__file__).parent.resolve()
-    log_cfg: Path = Path(__file__).parent / "logging.json"
+    log_cfg: FilePath = Field(BASE_DIR / "logging.json", description="Path to the logging configuration file")
 
     # Worker configuration
-    pool_size: int = 2
-    poll_interval: float = 1.0
+    pool_size: int = Field(2, description="Number of workers to run per queue")
+    poll_interval: float = Field(10.0, description="Time to wait before polling for tasks when all queues are empty")
+    worker_heartbeat: float = Field(1.0, description="Seconds to wait before checking the workers when queues are full")
 
-    # Queue configuration
-    queue_name_boefjes: str = "boefjes"
-    queue_name_normalizers: str = "normalizers"
-    queue_uri: str = "amqp://"
+    remote_ns: IPvAnyAddress = Field(
+        "1.1.1.1", description="Name server used for remote DNS resolution in the boefje runner"
+    )
 
-    # Runtime configuration
-    runtime: RuntimeConfiguration = RuntimeConfiguration.LOCAL
+    scan_profile_whitelist: dict[str, conint(strict=True, ge=0, le=4)] = Field(  # type: ignore
+        default_factory=dict,
+        description="Whitelist for normalizer ids allowed to produce scan profiles, including a maximum level.",
+        examples=['{"kat_external_db_normalize": 3, "kat_dns_normalize": 1}'],
+    )
 
-    enable_db: bool = True
-    katalogus_db_uri: PostgresDsn = "postgresql://xx:xx@host:5432/katalogus"
+    katalogus_db_uri: PostgresDsn = Field(
+        ...,
+        examples=["postgresql://xx:xx@host:5432/katalogus"],
+        description="Katalogus Postgres DB URI",
+        validation_alias="KATALOGUS_DB_URI",
+    )
 
-    scheduler_api: AnyHttpUrl = "http://localhost:8004"
+    db_connection_pool_size: int = Field(
+        16, description="Database connection pool size", validation_alias="KATALOGUS_DB_CONNECTION_POOL_SIZE"
+    )
 
-    katalogus_api: AnyHttpUrl = "http://localhost:8003"
+    scheduler_api: AnyHttpUrl = Field(
+        ..., examples=["http://localhost:8004"], description="Mula API URL", validation_alias="SCHEDULER_API"
+    )
+    katalogus_api: AnyHttpUrl = Field(
+        ..., examples=["http://localhost:8003"], description="Katalogus API URL", validation_alias="KATALOGUS_API"
+    )
+    octopoes_api: AnyHttpUrl = Field(
+        ..., examples=["http://localhost:8001"], description="Octopoes API URL", validation_alias="OCTOPOES_API"
+    )
+    api: AnyHttpUrl = Field(
+        ..., examples=["http://boefje:8000"], description="The URL on which the boefjes API is available"
+    )
+    # Boefje server settings
+    api_host: str = Field("0.0.0.0", description="Host address of the Boefje API server")
+    api_port: int = Field(8000, description="Host port of the Boefje API server")
+    docker_network: str = Field("bridge", description="Docker network to run Boefjes in")
+    bytes_api: AnyHttpUrl = Field(
+        ..., examples=["http://localhost:8002"], description="Bytes API URL", validation_alias="BYTES_API"
+    )
+    bytes_username: str = Field(
+        ..., examples=["test"], description="Bytes JWT login username", validation_alias="BYTES_USERNAME"
+    )
+    bytes_password: str = Field(
+        ..., examples=["secret"], description="Bytes JWT login password", validation_alias="BYTES_PASSWORD"
+    )
 
-    octopoes_api: AnyHttpUrl = "http://localhost:8001"
+    encryption_middleware: EncryptionMiddleware = Field(
+        EncryptionMiddleware.IDENTITY,
+        description="Toggle used to configure the encryption strategy",
+        examples=["IDENTITY", "NACL_SEALBOX"],
+    )
 
-    bytes_api: AnyHttpUrl = "http://localhost:8002"
-    bytes_username: str = "test"
-    bytes_password: str = "secret"
+    katalogus_private_key: str = Field(
+        "", description="Base64 encoded private key used for asymmetric encryption of settings"
+    )
+    katalogus_public_key: str = Field(
+        "", description="Base64 encoded public key used for asymmetric encryption of settings"
+    )
 
-    remote_ns: str = "8.8.8.8"
+    span_export_grpc_endpoint: AnyHttpUrl | None = Field(
+        None, description="OpenTelemetry endpoint", validation_alias="SPAN_EXPORT_GRPC_ENDPOINT"
+    )
 
-    lxd_endpoint: str = ""
-    lxd_password: Optional[str] = None
+    logging_format: Literal["text", "json"] = Field("text", description="Logging format")
+
+    outgoing_request_timeout: int = Field(30, description="Timeout for outgoing HTTP requests")
+
+    model_config = SettingsConfigDict(env_prefix="BOEFJES_")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        backwards_compatible_settings = BackwardsCompatibleEnvSettings(settings_cls)
+        return env_settings, init_settings, file_secret_settings, backwards_compatible_settings
 
 
-settings = Settings()
+# Do not initialize the settings module when compiling environment docs
+if not os.getenv("DOCS"):
+    settings = Settings()

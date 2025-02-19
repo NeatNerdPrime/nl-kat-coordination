@@ -1,5 +1,4 @@
 import json
-from typing import Tuple, Union, List
 
 import requests
 
@@ -32,7 +31,13 @@ SEARCH_TYPES = (
 )
 
 
-def request_certs(search_string, search_type="Identity", match="=", deduplicate=True, json_output=True) -> str:
+def request_certs(
+    search_string: str,
+    search_type: str = "Identity",
+    match: str = "=",
+    deduplicate: bool = True,
+    json_output: bool = True,
+) -> str:
     """Queries the public service CRT.sh for certificate information
     the searchtype can be specified and defaults to Identity.
     the type of sql matching can be specified and defaults to "="
@@ -48,7 +53,7 @@ def request_certs(search_string, search_type="Identity", match="=", deduplicate=
     if deduplicate:
         query["deduplicate"] = "Y"
 
-    response = requests.get(CRT_SH_API, params=query)
+    response = requests.get(CRT_SH_API, params=query, timeout=30)
     if response.status_code != 200:
         response.raise_for_status()
     if json_output:
@@ -56,10 +61,9 @@ def request_certs(search_string, search_type="Identity", match="=", deduplicate=
     return response.text
 
 
-def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
+def run(boefje_meta: BoefjeMeta) -> list[tuple[set, bytes | str]]:
     input_ = boefje_meta.arguments["input"]
     fqdn = input_["hostname"]["name"]
-    domain = fqdn.rstrip(".")
-    results = request_certs(domain)
+    results = request_certs(fqdn)
 
     return [(set(), results)]

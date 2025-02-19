@@ -1,22 +1,22 @@
 import datetime
-from typing import Optional
+import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class Normalizer(BaseModel):
     """Normalizer representation."""
 
-    id: Optional[str]
-    name: Optional[str]
-    version: Optional[str] = Field(default=None)
+    id: str
+    name: str | None = None
+    version: str | None = None
 
 
 class NormalizerMeta(BaseModel):
     """NormalizerMeta is the response object returned by the Bytes API."""
 
-    id: str
+    id: uuid.UUID
     normalizer: Normalizer
-    raw_file_id: Optional[str]
+    raw_file_id: str | None
     started_at: datetime.datetime
     ended_at: datetime.datetime

@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -10,10 +9,15 @@ class MutationOperationType(Enum):
     DELETE = "delete"
 
 
+class RunOn(Enum):
+    CREATE = MutationOperationType.CREATE.value
+    UPDATE = MutationOperationType.UPDATE.value
+
+
 class ScanProfile(BaseModel):
     level: int
     reference: str
-    scan_profile_type: Optional[str]
+    scan_profile_type: str | None
 
 
 class OOI(BaseModel):
@@ -27,4 +31,5 @@ class OOI(BaseModel):
 class ScanProfileMutation(BaseModel):
     operation: MutationOperationType
     primary_key: str
-    value: Optional[OOI]
+    value: OOI | None
+    client_id: str

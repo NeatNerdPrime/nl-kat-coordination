@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+import uuid
 
 from pydantic import BaseModel
 
@@ -6,8 +6,8 @@ from .boefje import BoefjeMeta
 
 
 class RawData(BaseModel):
-    id: Optional[str]
+    id: uuid.UUID
     boefje_meta: BoefjeMeta
-    mime_types: List[Dict[str, str]]
-    secure_hash: Optional[str]
-    hash_retrieval_link: Optional[str]
+    mime_types: list[dict[str, str]]
+    secure_hash: str | None = None
+    hash_retrieval_link: str | None = None

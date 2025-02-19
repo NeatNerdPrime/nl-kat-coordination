@@ -1,5 +1,5 @@
 {
-  "id": "snyk-job",
+  "id": "8ea73acd-3aac-408e-8493-1a3e4fc1a1c9",
   "boefje": {
     "id": "snyk",
     "version": null
@@ -7,9 +7,13 @@
   "organization": "_dev",
   "input_ooi": "Software|lodash|1.1.0|",
   "arguments": {
-    "pk": "Software|lodash|1.1.0|",
-    "software_name": "lodash",
-    "software_version": "1.1.0"
+    "input": {
+      "software": {
+        "pk": "Software|lodash|1.1.0|",
+        "name": "lodash",
+        "version": "1.1.0"
+      }
+    }
   },
   "dispatches": [
     {

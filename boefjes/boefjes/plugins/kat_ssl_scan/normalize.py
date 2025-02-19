@@ -1,15 +1,15 @@
-import xml.etree.ElementTree as ET
-from typing import Union, Iterator
+from collections.abc import Iterable
 
-from octopoes.models import OOI, Reference
-from octopoes.models.ooi.findings import KATFindingType, Finding
+import defusedxml.ElementTree as ET
 
-from boefjes.job_models import NormalizerMeta
+from boefjes.job_models import NormalizerOutput
+from octopoes.models import Reference
+from octopoes.models.ooi.findings import Finding, KATFindingType
 
 
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     root = ET.fromstring(raw)
-    website_reference = Reference.from_str(normalizer_meta.raw_data.boefje_meta.input_ooi)
+    website_reference = Reference.from_str(input_ooi["primary_key"])
 
     protocols = []
     for protocol in root.findall("./ssltest/protocol"):
@@ -36,7 +36,7 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
         yield kft
         yield Finding(finding_type=kft.reference, ooi=website_reference)
     elif ("tls", "1.0", True) in protocols and ("tls", "1.1", True) in protocols:
-        kft = KATFindingType(id="KAT-TLS-1.1-AND-1.2-SUPPORT")
+        kft = KATFindingType(id="KAT-TLS-1.0-AND-1.1-SUPPORT")
         yield kft
         yield Finding(finding_type=kft.reference, ooi=website_reference)
     elif ("tls", "1.2", False) in protocols:

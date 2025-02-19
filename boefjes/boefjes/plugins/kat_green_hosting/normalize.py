@@ -1,17 +1,15 @@
-from typing import Union, Iterator
 import json
-from octopoes.models import OOI, Reference
-from octopoes.models.ooi.findings import KATFindingType, Finding
+from collections.abc import Iterable
 
-from boefjes.job_models import NormalizerMeta
+from boefjes.job_models import NormalizerOutput
+from octopoes.models import Reference
+from octopoes.models.ooi.findings import Finding, KATFindingType
 
 
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
-    boefje_meta = normalizer_meta.raw_data.boefje_meta
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     data = json.loads(raw.decode())
 
-    pk = boefje_meta.input_ooi
-    website_reference = Reference.from_str(pk)
+    website_reference = Reference.from_str(input_ooi["primary_key"])
 
     if not data["green"]:
         ft = KATFindingType(id="KAT-NO-GREEN-HOSTING")

@@ -1,13 +1,9 @@
-    {
-        "id": "ssl-certificates",
-        "name": "SSLCertificates",
-        "description": "Scan SSL certificates of websites",
-        "consumes": [
-            "Website"
-        ],
-        "produces": [
-            "X509Certificate"
-        ],
-        "environment_keys": [],
-        "scan_level": 1
-    }
+{
+  "id": "ssl-certificates",
+  "name": "SSLCertificates",
+  "description": "Scan SSL certificates of websites. Checks if certificates are valid and/or expired.",
+  "consumes": [
+    "Website"
+  ],
+  "scan_level": 1
+}

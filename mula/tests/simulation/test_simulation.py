@@ -1,8 +1,10 @@
+# NOTE: This file is DEPRECATED
 import unittest
 import uuid
 from unittest import mock
 
 from scheduler import config, models, queues, rankers, schedulers
+
 from tests.factories import (
     BoefjeFactory,
     BoefjeMetaFactory,
@@ -32,9 +34,7 @@ class SimulationTestCase(unittest.TestCase):
             allow_priority_updates=True,
         )
 
-        normalizer_ranker = rankers.NormalizerRanker(
-            ctx=self.mock_ctx,
-        )
+        normalizer_ranker = rankers.NormalizerRanker(ctx=self.mock_ctx)
 
         return schedulers.NormalizerScheduler(
             ctx=self.mock_ctx,
@@ -52,9 +52,7 @@ class SimulationTestCase(unittest.TestCase):
             allow_priority_updates=True,
         )
 
-        boefje_ranker = rankers.BoefjeRanker(
-            ctx=self.mock_ctx,
-        )
+        boefje_ranker = rankers.BoefjeRanker(ctx=self.mock_ctx)
 
         return schedulers.BoefjeScheduler(
             ctx=self.mock_ctx,
@@ -82,7 +80,7 @@ class SimulationTestCase(unittest.TestCase):
                 queues.PrioritizedItem(
                     0,
                     models.BoefjeTask(
-                        id=uuid.uuid4().hex,
+                        id=uuid.uuid4(),
                         boefje=BoefjeFactory(),
                         input_ooi=ooi.primary_key,
                         organization=self.organisation.id,
@@ -120,9 +118,7 @@ class SimulationTestCase(unittest.TestCase):
                 queues.PrioritizedItem(
                     0,
                     models.NormalizerTask(
-                        id=uuid.uuid4().hex,
-                        normalizer=PluginFactory(type="normalizer"),
-                        boefje_meta=raw_file.boefje_meta,
+                        id=uuid.uuid4(), normalizer=PluginFactory(type="normalizer"), boefje_meta=raw_file.boefje_meta
                     ),
                 )
             ]

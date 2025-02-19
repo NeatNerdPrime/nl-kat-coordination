@@ -1,24 +1,21 @@
-from typing import Union, Iterator
+from collections.abc import Iterable
 from urllib.parse import urljoin
 
+import validators
 from bs4 import BeautifulSoup
 
-import validators
-
-from octopoes.models import OOI
+from boefjes.job_models import NormalizerOutput
 from octopoes.models.ooi.network import Network
 from octopoes.models.ooi.web import URL
 
-from boefjes.job_models import NormalizerMeta
 
-
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     soup = BeautifulSoup(raw, "html.parser")
-    images = set([img["src"] for img in soup.find_all("img", src=True)])
+    images = {img["src"] for img in soup.find_all("img", src=True)}
 
-    network_name = normalizer_meta.raw_data.boefje_meta.arguments["input"]["website"]["hostname"]["network"]["name"]
-    host = normalizer_meta.raw_data.boefje_meta.arguments["input"]["website"]["hostname"]["name"]
-    service = normalizer_meta.raw_data.boefje_meta.arguments["input"]["website"]["ip_service"]["service"]["name"]
+    network_name = input_ooi["website"]["hostname"]["network"]["name"]
+    host = input_ooi["website"]["hostname"]["name"]
+    service = input_ooi["website"]["ip_service"]["service"]["name"]
 
     url = f"{service}://{host}/"
 
@@ -26,7 +23,4 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
         if not validators.url(img):
             img = urljoin(url, img)
 
-        yield URL(
-            network=Network(name=network_name).reference,
-            raw=img,
-        )
+        yield URL(network=Network(name=network_name).reference, raw=img)

@@ -1,9 +1,7 @@
-from typing import Union, Iterator
+from collections.abc import Iterable
 
-from octopoes.models import OOI
-
-from boefjes.job_models import NormalizerMeta
+from boefjes.job_models import NormalizerOutput
 
 
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     yield 3

@@ -1,16 +1,14 @@
 import json
 import logging
-from typing import Tuple, Union, List
+from ipaddress import ip_address
+from os import getenv
 
 import shodan
-
-from os import getenv
-from ipaddress import ip_address
 
 from boefjes.job_models import BoefjeMeta
 
 
-def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
+def run(boefje_meta: BoefjeMeta) -> list[tuple[set, bytes | str]]:
     api = shodan.Shodan(getenv("SHODAN_API"))
     input_ = boefje_meta.arguments["input"]
     ip = input_["address"]

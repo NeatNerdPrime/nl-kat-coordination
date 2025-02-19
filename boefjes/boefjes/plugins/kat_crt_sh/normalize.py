@@ -1,23 +1,21 @@
 import datetime
 import json
-from typing import Iterator, Union
+from collections.abc import Iterable
+
 from dateutil.parser import parse
-from octopoes.models import OOI
+
+from boefjes.job_models import NormalizerOutput
 from octopoes.models.ooi.certificate import X509Certificate
 from octopoes.models.ooi.dns.zone import Hostname
 from octopoes.models.ooi.network import Network
 
-from boefjes.job_models import NormalizerMeta
 
-
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     results = json.loads(raw)
-    input_ = normalizer_meta.raw_data.boefje_meta.arguments["input"]
-    fqdn = input_["hostname"]["name"]
-    current = fqdn.lstrip(".").rstrip(".")
+    fqdn = input_ooi["hostname"]["name"]
+    current = fqdn.lstrip(".")
 
     network = Network(name="internet")
-    yield network
     network_reference = network.reference
 
     unique_domains = set()

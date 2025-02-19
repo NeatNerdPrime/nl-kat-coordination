@@ -1,16 +1,18 @@
 {
-    "id": "kat_binaryedge_service_identification",
-    "consumes": [
-        "binaryedge"
-    ],
-    "produces": [
-        "KATFindingType",
-        "SoftwareInstance",
-        "Service",
-        "IPPort",
-        "Finding",
-        "Software",
-        "IPService",
-        "CVEFindingType"
-    ]
+  "id": "kat_binaryedge_service_identification",
+  "name": "BinaryEdge service identification",
+  "description": "Parses BinaryEdge data to check if Software is present that is known for malware.",
+  "consumes": [
+    "boefje/binaryedge"
+  ],
+  "produces": [
+    "KATFindingType",
+    "SoftwareInstance",
+    "Service",
+    "IPPort",
+    "Finding",
+    "Software",
+    "IPService",
+    "CVEFindingType"
+  ]
 }

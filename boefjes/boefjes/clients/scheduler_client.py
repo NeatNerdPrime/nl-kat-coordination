@@ -1,36 +1,18 @@
-import logging
-from typing import List, Optional, Union
-
-import requests
-import uuid
-
-from enum import Enum
 import datetime
+import uuid
+from enum import Enum
+from typing import Any
 
-from requests.adapters import HTTPAdapter, Retry
+from httpx import Client, HTTPTransport, Response
+from pydantic import BaseModel, TypeAdapter
 
+from boefjes.config import settings
 from boefjes.job_models import BoefjeMeta, NormalizerMeta
-from pydantic import BaseModel, parse_obj_as
-
-
-logger = logging.getLogger(__name__)
 
 
 class Queue(BaseModel):
     id: str
     size: int
-
-
-class QueuePrioritizedItem(BaseModel):
-    """Representation of a queue.PrioritizedItem on the priority queue. Used
-    for unmarshalling of priority queue prioritized items to a JSON
-    representation.
-    """
-
-    id: uuid.UUID
-    priority: int
-    hash: Optional[str]
-    data: Union[BoefjeMeta, NormalizerMeta]
 
 
 class TaskStatus(Enum):
@@ -42,66 +24,86 @@ class TaskStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class Task(BaseModel):
-    id: str
+    id: uuid.UUID
     scheduler_id: str
-    type: str
-    p_item: QueuePrioritizedItem
+    schedule_id: uuid.UUID | None = None
+    organisation: str
+    priority: int
     status: TaskStatus
+    type: str
+    hash: str | None = None
+    data: BoefjeMeta | NormalizerMeta
     created_at: datetime.datetime
     modified_at: datetime.datetime
 
 
+class PaginatedTasksResponse(BaseModel):
+    count: int
+    next: str | None = None
+    previous: str | None = None
+    results: list[Task]
+
+
 class SchedulerClientInterface:
-    def get_queues(self) -> List[Queue]:
+    def get_queues(self) -> list[Queue]:
         raise NotImplementedError()
 
-    def pop_item(self, queue: str) -> Optional[QueuePrioritizedItem]:
+    def pop_item(self, scheduler_id: str) -> Task | None:
         raise NotImplementedError()
 
-    def patch_task(self, task_id: str, status: TaskStatus) -> None:
+    def pop_items(self, scheduler_id: str, filters: dict[str, Any]) -> PaginatedTasksResponse | None:
         raise NotImplementedError()
 
+    def patch_task(self, task_id: uuid.UUID, status: TaskStatus) -> None:
+        raise NotImplementedError()
 
-class LogRetry(Retry):
-    """Add a log when retrying a request"""
+    def get_task(self, task_id: uuid.UUID) -> Task:
+        raise NotImplementedError()
 
-    def __init__(self, *args, skip_log=False, **kwargs):
-        if not skip_log:
-            logger.error("Failed to create desired call. Retrying...")
-
-        super().__init__(*args, **kwargs)
+    def push_item(self, p_item: Task) -> None:
+        raise NotImplementedError()
 
 
 class SchedulerAPIClient(SchedulerClientInterface):
     def __init__(self, base_url: str):
-        self.base_url = base_url
-        self._session = requests.Session()
-
-        max_retries = LogRetry(skip_log=True, total=6, backoff_factor=1)
-        self._session.mount("https://", HTTPAdapter(max_retries=max_retries))
-        self._session.mount("http://", HTTPAdapter(max_retries=max_retries))
+        self._session = Client(
+            base_url=base_url, transport=HTTPTransport(retries=6), timeout=settings.outgoing_request_timeout
+        )
 
     @staticmethod
-    def _verify_response(response: requests.Response) -> None:
+    def _verify_response(response: Response) -> None:
         response.raise_for_status()
 
-    def get_queues(self) -> List[Queue]:
-        response = self._session.get(f"{self.base_url}/queues")
+    def pop_item(self, scheduler_id: str) -> Task | None:
+        response = self._session.post(f"/schedulers/{scheduler_id}/pop?limit=1")
         self._verify_response(response)
 
-        return parse_obj_as(List[Queue], response.json())
+        page = TypeAdapter(PaginatedTasksResponse | None).validate_json(response.content)
+        if page.count == 0:
+            return None
 
-    def pop_item(self, queue: str) -> Optional[QueuePrioritizedItem]:
-        response = self._session.get(f"{self.base_url}/queues/{queue}/pop")
+        return page.results[0]
+
+    def pop_items(self, scheduler_id: str, filters: dict[str, Any]) -> PaginatedTasksResponse | None:
+        response = self._session.post(f"/schedulers/{scheduler_id}/pop", json=filters)
         self._verify_response(response)
 
-        return parse_obj_as(Optional[QueuePrioritizedItem], response.json())
+        return TypeAdapter(PaginatedTasksResponse | None).validate_json(response.content)
 
-    def patch_task(self, task_id: str, status: TaskStatus) -> None:
-        response = self._session.patch(f"{self.base_url}/tasks/{task_id}", json={"status": status.value})
+    def push_item(self, p_item: Task) -> None:
+        response = self._session.post(f"/schedulers/{p_item.scheduler_id}/push", content=p_item.model_dump_json())
         self._verify_response(response)
 
-        logger.info(f"Set task status to {status} in the scheduler for task[{task_id}]")
+    def patch_task(self, task_id: uuid.UUID, status: TaskStatus) -> None:
+        response = self._session.patch(f"/tasks/{task_id}", json={"status": status.value})
+        self._verify_response(response)
+
+    def get_task(self, task_id: uuid.UUID) -> Task:
+        response = self._session.get(f"/tasks/{task_id}")
+        self._verify_response(response)
+
+        return Task.model_validate_json(response.content)

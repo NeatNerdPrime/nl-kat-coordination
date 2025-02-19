@@ -1,24 +1,40 @@
-from typing import List, Iterator, Union
+from collections.abc import Iterator
+from typing import Any
 
 from octopoes.models import OOI
-from octopoes.models.ooi.dns.zone import ResolvedHostname
-from octopoes.models.ooi.findings import KATFindingType, Finding
-from octopoes.models.ooi.web import HTTPResource, HTTPHeader
+from octopoes.models.ooi.findings import Finding, KATFindingType
+from octopoes.models.ooi.web import HTTPHeader, HTTPResource
+
+DEPRECATED_HEADER = {
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-dns-prefetch-control",
+    "x-forwarded-for",
+    "x-robots-tag",
+    "pragma",
+    "warning",
+}
+
+XSS_CAPABLE_TYPES = ["text/html", "application/xhtml+xml", "application/xml", "text/xml", "image/svg+xml"]
 
 
-def run(
-    resource: HTTPResource,
-    additional_oois: List[Union[HTTPHeader, ResolvedHostname]],
-) -> Iterator[OOI]:
+def is_xss_capable(content_type: str) -> bool:
+    """Determine if the content type indicates XSS capability."""
+    main_type = content_type.split(";")[0].strip().lower()
+    return main_type in XSS_CAPABLE_TYPES
+
+
+def run(resource: HTTPResource, additional_oois: list[HTTPHeader], config: dict[str, Any]) -> Iterator[OOI]:
     if not additional_oois:
         return
 
     header_keys = [header.key.lower() for header in additional_oois]
+    headers = {header.key.lower(): header.value for header in additional_oois}
 
     if "location" in header_keys:
         return
 
-    if "strict-transport-security" not in header_keys:
+    if "strict-transport-security" not in header_keys and resource.reference.tokenized.web_url.scheme != "http":
         ft = KATFindingType(id="KAT-NO-HSTS")
         yield ft
         finding = Finding(
@@ -28,32 +44,12 @@ def run(
         )
         yield finding
 
-    if "content-security-policy" not in header_keys:
+    if "content-security-policy" not in header_keys and is_xss_capable(headers.get("content-type", "")):
         ft = KATFindingType(id="KAT-NO-CSP")
         finding = Finding(
             finding_type=ft.reference,
             ooi=resource.reference,
             description="Header content-security-policy is missing or not configured correctly.",
-        )
-        yield ft
-        yield finding
-
-    if "x-permitted-cross-domain-policies" not in header_keys:
-        ft = KATFindingType(id="KAT-NO-X-PERMITTED-CROSS-DOMAIN-POLICIES")
-        finding = Finding(
-            finding_type=ft.reference,
-            ooi=resource.reference,
-            description="Header x-permitted-cross-domain-policies is missing or not configured correctly.",
-        )
-        yield ft
-        yield finding
-
-    if "x-xss-protection" not in header_keys:
-        ft = KATFindingType(id="KAT-NO-EXPLICIT-XSS-PROTECTION")
-        finding = Finding(
-            finding_type=ft.reference,
-            ooi=resource.reference,
-            description="Header x-xss-protection is missing or not configured correctly.",
         )
         yield ft
         yield finding
@@ -64,26 +60,6 @@ def run(
             finding_type=ft.reference,
             ooi=resource.reference,
             description="Header x-frame-options is missing or not configured correctly.",
-        )
-        yield ft
-        yield finding
-
-    if "x-dns-prefetch-control" not in header_keys:
-        ft = KATFindingType(id="KAT-NO-X-DNS-PREFETCH-CONTROL")
-        finding = Finding(
-            finding_type=ft.reference,
-            ooi=resource.reference,
-            description="Header x-dns-prefetch-control is missing or not configured correctly.",
-        )
-        yield ft
-        yield finding
-
-    if "expect-ct" not in header_keys:
-        ft = KATFindingType(id="KAT-NO-EXCPECT-CT")
-        finding = Finding(
-            finding_type=ft.reference,
-            ooi=resource.reference,
-            description="Header expect-ct is missing or not configured correctly.",
         )
         yield ft
         yield finding
@@ -114,6 +90,18 @@ def run(
             finding_type=ft.reference,
             ooi=resource.reference,
             description="Header x-content-type-options is missing or not configured correctly.",
+        )
+        yield ft
+        yield finding
+
+    deprecated_headers = set(header_keys) & DEPRECATED_HEADER
+    if deprecated_headers:
+        ft = KATFindingType(id="KAT-NONSTANDARD-HEADERS")
+        finding = Finding(
+            finding_type=ft.reference,
+            ooi=resource.reference,
+            description=f"Nonstandard headers are used. Avoid using the following headers: "
+            f"{' '.join(deprecated_headers)}",
         )
         yield ft
         yield finding

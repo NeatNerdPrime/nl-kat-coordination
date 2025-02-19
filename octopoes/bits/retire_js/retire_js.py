@@ -1,23 +1,21 @@
 import hashlib
 import json
-from os import path
-from typing import List, Iterator, Dict, Union
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
 from octopoes.models import OOI
-from octopoes.models.ooi.findings import Finding, CVEFindingType, RetireJSFindingType
-from octopoes.models.ooi.software import SoftwareInstance, Software
-from packaging import version
+from octopoes.models.ooi.findings import CVEFindingType, Finding, RetireJSFindingType
+from octopoes.models.ooi.software import Software, SoftwareInstance
+from packaging.version import parse
 
 
-def run(
-    input_ooi: Software,
-    additional_oois: List[SoftwareInstance],
-) -> Iterator[OOI]:
+def run(input_ooi: Software, additional_oois: list[SoftwareInstance], config: dict[str, Any]) -> Iterator[OOI]:
     software_name = input_ooi.name
     software_version = input_ooi.version if input_ooi.version else "999.9.9"
 
-    filename_path = path.join(path.dirname(__file__), "retirejs.json")
-    with open(filename_path, encoding="utf-8") as json_file:
+    filename_path = Path(__file__).parent / "retirejs.json"
+    with filename_path.open(encoding="utf-8") as json_file:
         known_vulnerabilities = json.load(json_file)
 
     vulnerabilities = _check_vulnerabilities(software_name, software_version, known_vulnerabilities)
@@ -42,8 +40,8 @@ def run(
             )
 
 
-def _check_vulnerabilities(name, package_version: str, known_vulnerabilities: Dict) -> Dict[str, List[str]]:
-    vulnerabilities: Dict[str, List[str]] = {"CVE": [], "RetireJS": []}
+def _check_vulnerabilities(name: str, package_version: str, known_vulnerabilities: dict) -> dict[str, list[str]]:
+    vulnerabilities: dict[str, list[str]] = {"CVE": [], "RetireJS": []}
     processed_name = _process_name(name)
     found_brands = [brand for brand in known_vulnerabilities if processed_name == _process_name(brand)]
 
@@ -64,7 +62,7 @@ def _process_name(name: str) -> str:
     return name.lower().replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
 
 
-def _hash_identifiers(identifiers: Dict[str, Union[str, List[str]]]) -> str:
+def _hash_identifiers(identifiers: dict[str, str | list[str]]) -> str:
     pre_hash = ""
     for identifier in identifiers.values():
         pre_hash += "".join(identifier)
@@ -72,10 +70,10 @@ def _hash_identifiers(identifiers: Dict[str, Union[str, List[str]]]) -> str:
 
 
 def _check_versions(package_version: str, known_vulnerability: dict) -> bool:
-    below = version.parse(package_version) < version.parse(known_vulnerability["below"])
+    below = parse(package_version) < parse(known_vulnerability["below"])
     # Some packages are only vulnerable below a version and not above
     above = (
-        version.parse(package_version) >= version.parse(known_vulnerability["atOrAbove"])
+        parse(package_version) >= parse(known_vulnerability["atOrAbove"])
         if "atOrAbove" in known_vulnerability
         else True
     )

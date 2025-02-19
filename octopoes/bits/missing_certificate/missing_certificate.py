@@ -1,14 +1,12 @@
-from typing import Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from octopoes.models import OOI
-from octopoes.models.ooi.findings import KATFindingType, Finding
+from octopoes.models.ooi.findings import Finding, KATFindingType
 from octopoes.models.ooi.web import Website
 
 
-def run(
-    input_ooi: Website,
-    additional_oois,
-) -> Iterator[OOI]:
+def run(input_ooi: Website, additional_oois: list, config: dict[str, Any]) -> Iterator[OOI]:
     if input_ooi.ip_service.tokenized.service.name.lower() != "https":
         return
 

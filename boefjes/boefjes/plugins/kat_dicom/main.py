@@ -1,13 +1,12 @@
 import json
 import logging
-from typing import Tuple, Union, List
 
 from pynetdicom import AE
 
 from boefjes.job_models import BoefjeMeta
 
 
-def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
+def run(boefje_meta: BoefjeMeta) -> list[tuple[set, bytes | str]]:
     input_ = boefje_meta.arguments["input"]
     ip = input_["address"]
 
@@ -23,7 +22,7 @@ def run(boefje_meta: BoefjeMeta) -> List[Tuple[set, Union[bytes, str]]]:
 
     # Default ports
     ports = (11112, 104, 2761, 2762)
-    results = {"open_ports": []}
+    results: dict[str, list[int]] = {"open_ports": []}
 
     # Attempt to establish connection and post result
     for port in ports:

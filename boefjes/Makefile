@@ -6,7 +6,7 @@ MAKEFLAGS += --warn-undefined-variables
 MAKEFLAGS += --no-builtin-rules
 # Makefile Reference: https://tech.davis-hansson.com/p/make/
 
-.PHONY: help sql migrate migrations debian ubuntu clean
+.PHONY: help sql migrate migrations debian ubuntu clean images
 
 # use HIDE to run commands invisibly, unless VERBOSE defined
 HIDE:=$(if $(VERBOSE),,@)
@@ -15,6 +15,10 @@ export m		# Message for alembic migration
 export revid	# Revision id to generate raw sql for
 export rev1		# Previous revision id for generating migrations
 export rev2		# New revision id for the new migration file
+
+# We set this to build images with the right target platform in the `images` target. This prevents arm systems such as
+# systems with an Apple silicon chip to build images they cannot use.
+export DOCKER_DEFAULT_PLATFORM=$(shell docker system info --format '{{.OSType}}/{{.Architecture}}')
 
 ##
 ##|------------------------------------------------------------------------|
@@ -28,10 +32,16 @@ help: ## Show this help.
 ##|------------------------------------------------------------------------|
 ##			Development
 ##|------------------------------------------------------------------------|
-build: seed
 
-seed:  # Seed the katalogus database
-	-docker-compose run katalogus python -m boefjes.seed
+build: images
+
+images:  # Build the images for the containerized boefjes
+  # Dns-records is disabled for now, see the discussion in https://github.com/minvws/nl-kat-coordination/pull/2709
+	# docker build -f images/base.Dockerfile -t ghcr.io/minvws/openkat/dns-records --build-arg BOEFJE_PATH=./boefjes/plugins/kat_dns .
+	docker build -f ./boefjes/plugins/kat_dnssec/boefje.Dockerfile -t ghcr.io/minvws/openkat/dns-sec:latest .
+	docker build -f ./boefjes/plugins/kat_nmap_tcp/boefje.Dockerfile -t ghcr.io/minvws/openkat/nmap:latest  .
+	docker build -f ./boefjes/plugins/kat_export_http/boefje.Dockerfile -t ghcr.io/minvws/openkat/export-http:latest .
+
 
 ##
 ##|------------------------------------------------------------------------|
@@ -42,12 +52,12 @@ migrations: ## Generate a migration using alembic
 ifeq ($(m),)
 	$(HIDE) (echo "Specify a message with m={message} and a rev-id with revid={revid} (e.g. 0001 etc.)"; exit 1)
 else
-	docker-compose run katalogus python -m alembic --config /app/boefjes/boefjes/alembic.ini revision --autogenerate -m "$(m)"
+	docker compose run --rm katalogus python -m alembic --config /app/boefjes/boefjes/alembic.ini revision --autogenerate -m "$(m)"
 endif
 
 
 sql: ## Generate raw sql for the migrations
-	docker-compose run katalogus python -m alembic --config /app/boefjes/boefjes/alembic.ini upgrade $(rev1):$(rev2) --sql
+	docker compose run --rm katalogus python -m alembic --config /app/boefjes/boefjes/alembic.ini upgrade $(rev1):$(rev2) --sql
 
 check:
 	pre-commit run --all-files --color always
@@ -57,7 +67,7 @@ check:
 ##			Tests
 ##|------------------------------------------------------------------------|
 
-ci-docker-compose := docker-compose -f base.yml  -f .ci/docker-compose.yml
+ci-docker-compose := docker compose --project-directory . -f .ci/docker-compose.yml
 
 
 test: itest ## Run all tests.
@@ -66,8 +76,22 @@ itest: ## Run the integration tests.
 	$(ci-docker-compose) build
 	$(ci-docker-compose) down --remove-orphans
 	$(ci-docker-compose) run --rm katalogus_integration
+	$(ci-docker-compose) stop
 
-debian:
+migration_bench:  ## Run the migration benchmark.
+	$(ci-docker-compose) build
+	$(ci-docker-compose) down --remove-orphans
+	$(ci-docker-compose) run --rm migration_bench
+	$(ci-docker-compose) stop
+
+bench:  ## Run the other benchmarks
+	$(ci-docker-compose) build
+	$(ci-docker-compose) down --remove-orphans
+	$(ci-docker-compose) run --rm katalogus_integration \
+	python -m cProfile -o .ci/bench_$$(date +%Y_%m_%d-%H:%M:%S).pstat -m pytest -m slow --no-cov tests/integration
+	$(ci-docker-compose) stop
+
+debian12:
 	docker run --rm \
 	--env PKG_NAME=kat-boefjes \
 	--env BUILD_DIR=./build \
@@ -77,10 +101,10 @@ debian:
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--mount type=bind,src=${CURDIR}/../octopoes,dst=/octopoes \
 	--workdir /app \
-	kat-debian-build-image \
+	kat-debian12-build-image \
 	packaging/scripts/build-debian-package.sh
 
-ubuntu:
+ubuntu22.04:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-boefjes \
@@ -91,14 +115,14 @@ ubuntu:
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--mount type=bind,src=${CURDIR}/../octopoes,dst=/octopoes \
 	--workdir /app \
-	kat-ubuntu-build-image \
+	kat-ubuntu22.04-build-image \
 	packaging/scripts/build-debian-package.sh
 
 clean:
 	rm -rf build
 	rm -rf debian/kat-*/ debian/.debhelper debian/files *.egg-info/ dist/
-	rm debian/debhelper-build-stamp
-	rm debian/*.*.debhelper
-	rm debian/*.substvars
-	rm debian/*.debhelper.log
-	rm debian/changelog
+	rm -f debian/debhelper-build-stamp
+	rm -f debian/*.*.debhelper
+	rm -f debian/*.substvars
+	rm -f debian/*.debhelper.log
+	rm -f debian/changelog

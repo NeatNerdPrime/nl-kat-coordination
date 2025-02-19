@@ -1,29 +1,42 @@
-from django.views.generic import ListView
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
+from typing import Any
+
+from django.contrib import messages
+from django.utils.translation import gettext_lazy as _
+from httpx import HTTPError
+
+from katalogus.views.mixins import SinglePluginView
+from rocky.paginator import RockyPaginator
 
 
-@class_view_decorator(otp_required)
-class PluginSettingsListView(ListView):
+class PluginSettingsListView(SinglePluginView):
     """
     Shows all settings available for a specific plugin (plugin schema settings).
     """
 
-    def get(self, request, *args, **kwargs):
-        self.object_list = self.get_queryset()
-        return super().get(request, *args, **kwargs)
+    paginator_class = RockyPaginator
+    paginate_by = 150
+    context_object_name = "plugin_settings"
 
-    def get_queryset(self):
+    def get_plugin_settings(self) -> list[dict[str, Any]]:
         """Gets schema setting with additional info of the value of a setting."""
-        queryset = []
-        if self.plugin_schema:
-            for schema_props in self.plugin_schema["properties"]:
-                setting = self.katalogus_client.get_plugin_setting(plugin_id=self.plugin["id"], name=schema_props)
-                if "message" in setting:
-                    value = ""
-                else:
-                    value = setting
-                queryset.append(
-                    {"name": schema_props, "value": value, "required": schema_props in self.plugin_schema["required"]}
-                )
-        return queryset
+        try:
+            if self.plugin_schema is None:
+                return []
+
+            settings = self.katalogus_client.get_plugin_settings(plugin_id=self.plugin.id)
+            props = self.plugin_schema.get("properties", [])
+
+            return [
+                {
+                    "name": prop,
+                    "value": settings.get(prop),
+                    "required": self.is_required_field(prop),
+                    "secret": self.is_secret_field(prop),
+                }
+                for prop in props
+            ]
+        except HTTPError:
+            messages.add_message(
+                self.request, messages.ERROR, _("Failed getting settings for boefje {}").format(self.plugin.id)
+            )
+            return []

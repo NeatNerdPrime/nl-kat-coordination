@@ -3,9 +3,8 @@
   "ooi": {
     "object_type": "Hostname",
     "network": "Network|internet",
-    "name": "calvinnormalizer.com.",
-    "fqdn": "Hostname|internet|calvinnormalizer.com."
+    "name": "calvinnormalizer.com"
   },
   "valid_time": "2019-01-01T00:00:00+00:00",
-  "task_id": "4321"
+  "task_id": "824cfb63-1a46-4446-9941-d36e9550bee5"
 }

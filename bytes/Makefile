@@ -34,7 +34,7 @@ done: lint test ## Prepare for a commit.
 lint: ## Format the code using black.
 	pre-commit run --all-files --show-diff-on-failure --color always
 
-py-run := docker-compose run bytes python
+py-run := docker compose run --rm bytes python
 
 
 export revid
@@ -60,17 +60,19 @@ migrate: ## Run alembic migrations
 ##|------------------------------------------------------------------------|
 
 test: utest itest ## Run all tests.
-ci-docker-compose := docker-compose -f base.yml  -f .ci/docker-compose.yml
+ci-docker-compose := docker compose --project-directory . -f .ci/docker-compose.yml
 
 
 utest: ## Run the unit tests.
 	$(ci-docker-compose) build $(build_args)
+	$(ci-docker-compose) kill
 	$(ci-docker-compose) down --remove-orphans
 	$(ci-docker-compose) run --rm bytes_unit
 
 
 itest: ## Run the integration tests.
 	$(ci-docker-compose) build $(build_args)
+	$(ci-docker-compose) kill
 	$(ci-docker-compose) down --remove-orphans
 	$(ci-docker-compose) run --rm bytes_integration
 
@@ -79,7 +81,7 @@ itest: ## Run the integration tests.
 ##|------------------------------------------------------------------------|
 ##			Building
 ##|------------------------------------------------------------------------|
-debian:
+debian12:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-bytes \
@@ -89,10 +91,10 @@ debian:
 	--env RELEASE_TAG=${RELEASE_TAG} \
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--workdir /app \
-	kat-debian-build-image \
+	kat-debian12-build-image \
 	packaging/scripts/build-debian-package.sh
 
-ubuntu:
+ubuntu22.04:
 	mkdir -p build
 	docker run --rm \
 	--env PKG_NAME=kat-bytes \
@@ -102,7 +104,7 @@ ubuntu:
 	--env RELEASE_TAG=${RELEASE_TAG} \
 	--mount type=bind,src=${CURDIR},dst=/app \
 	--workdir /app \
-	kat-ubuntu-build-image \
+	kat-ubuntu22.04-build-image \
 	packaging/scripts/build-debian-package.sh
 
 clean:

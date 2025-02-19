@@ -9,5 +9,6 @@ Contains documentation for developers and contributors.
 
    management
    development
+   ideas
    contributions
-   project_statuses
+   feature_flow

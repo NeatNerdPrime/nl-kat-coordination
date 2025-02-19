@@ -1,31 +1,42 @@
-import logging
-from typing import Type
-
+from account.mixins import OrganizationView
 from django.http import Http404
 from django.shortcuts import redirect
 from django.urls.base import reverse
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import TemplateView
-from django_otp.decorators import otp_required
-from two_factor.views.utils import class_view_decorator
-
-from account.mixins import OrganizationView
-from octopoes.models import OOI
-from octopoes.models.types import type_by_name
-from rocky.views.ooi_view import BaseOOIFormView
 from tools.ooi_helpers import OOI_TYPES_WITHOUT_FINDINGS
 from tools.view_helpers import existing_ooi_type
 
-logger = logging.getLogger(__name__)
+from octopoes.models import OOI
+from octopoes.models.ooi.monitoring import Incident
+from octopoes.models.ooi.question import Question
+from octopoes.models.ooi.reports import AssetReport, BaseReport, HydratedReport, Report, ReportData
+from octopoes.models.ooi.web import RESTAPI, ImageMetadata
+from octopoes.models.types import type_by_name
+from rocky.views.ooi_view import BaseOOIFormView
+
+EXCLUDE_OOI_TYPES = [
+    ooi_type.get_object_type()
+    for ooi_type in [
+        Question,
+        RESTAPI,
+        Incident,
+        ImageMetadata,
+        Report,
+        ReportData,
+        BaseReport,
+        AssetReport,
+        HydratedReport,
+    ]
+]
 
 
 def ooi_type_input_choices():
-    ooi_types = OOI_TYPES_WITHOUT_FINDINGS
+    ooi_types = [ooi_type for ooi_type in OOI_TYPES_WITHOUT_FINDINGS if ooi_type not in EXCLUDE_OOI_TYPES]
     ooi_types.sort()
     return [{"value": ooi_type, "text": ooi_type} for ooi_type in ooi_types]
 
 
-@class_view_decorator(otp_required)
 class OOIAddTypeSelectView(OrganizationView, TemplateView):
     template_name = "oois/ooi_add_type_select.html"
 
@@ -55,7 +66,6 @@ class OOIAddTypeSelectView(OrganizationView, TemplateView):
         return context
 
 
-@class_view_decorator(otp_required)
 class OOIAddView(BaseOOIFormView):
     template_name = "oois/ooi_add.html"
 
@@ -64,11 +74,20 @@ class OOIAddView(BaseOOIFormView):
         self.ooi_class = self.get_ooi_class()
         self.initial = request.GET
 
-    def get_ooi_class(self) -> Type[OOI]:
+    def get_ooi_class(self) -> type[OOI]:
         try:
-            return type_by_name(self.kwargs["ooi_type"])
+            ooi_type = self.kwargs["ooi_type"]
+            if ooi_type in EXCLUDE_OOI_TYPES:
+                raise KeyError
+            return type_by_name(ooi_type)
         except KeyError:
-            raise Http404("OOI not found")
+            raise Http404("OOI-type not found")
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["user_id"] = self.request.user.id
+
+        return kwargs
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

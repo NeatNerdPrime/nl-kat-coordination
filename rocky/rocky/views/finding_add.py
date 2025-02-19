@@ -1,30 +1,28 @@
 from datetime import datetime, timezone
-from typing import List, Dict
 from uuid import uuid4
 
+from django.forms import Form
 from django.shortcuts import redirect
 from django.urls.base import reverse
 from django.utils.translation import gettext_lazy as _
+from tools.forms.finding_type import FindingAddForm
+from tools.view_helpers import get_ooi_url
 
 from octopoes.api.models import Declaration
 from octopoes.models import Reference
 from octopoes.models.ooi.findings import (
+    CAPECFindingType,
     CVEFindingType,
-    KATFindingType,
+    CWEFindingType,
     Finding,
+    FindingType,
+    KATFindingType,
     RetireJSFindingType,
     SnykFindingType,
-    FindingType,
-    CWEFindingType,
-    CAPECFindingType,
 )
 from octopoes.models.types import OOI_TYPES
-
-from rocky.bytes_client import get_bytes_client, BytesClient
+from rocky.bytes_client import BytesClient, get_bytes_client
 from rocky.views.ooi_view import BaseOOIFormView
-from tools.forms.finding_type import FindingAddForm
-from tools.view_helpers import get_ooi_url
-
 
 FINDING_TYPES_PREFIXES = {
     "CVE": CVEFindingType,
@@ -36,9 +34,7 @@ FINDING_TYPES_PREFIXES = {
 }
 
 
-def get_finding_type_from_id(
-    finding_type_id: str,
-) -> FindingType:
+def get_finding_type_from_id(finding_type_id: str) -> FindingType:
     finding_type_id = finding_type_id.upper()
 
     prefix = finding_type_id.upper().split("-")[0]
@@ -70,10 +66,7 @@ class FindingAddView(BaseOOIFormView):
         return context
 
     def get_form_kwargs(self):
-        kwargs = {
-            "connector": self.octopoes_api_connector,
-            "ooi_list": self.get_ooi_options(),
-        }
+        kwargs = {"connector": self.octopoes_api_connector, "ooi_list": self.get_ooi_options()}
         kwargs.update(super().get_form_kwargs())
 
         if "ooi_class" in kwargs:
@@ -81,7 +74,7 @@ class FindingAddView(BaseOOIFormView):
 
         return kwargs
 
-    def get_form(self, form_class=None) -> FindingAddForm:
+    def get_form(self, form_class: type[Form] | None = None) -> FindingAddForm:
         if form_class is None:
             form_class = self.get_form_class()
 
@@ -127,10 +120,10 @@ class FindingAddView(BaseOOIFormView):
 
         return redirect(get_ooi_url("ooi_detail", ooi_id, self.organization.code))
 
-    def get_ooi_options(self) -> List[Dict[str, str]]:
+    def get_ooi_options(self) -> list[tuple[str, str]]:
         # Query to render form options
         ooi_set = set(OOI_TYPES.values()).difference({Finding, FindingType})
-        objects = self.octopoes_api_connector.list(ooi_set).items
+        objects = self.octopoes_api_connector.list_objects(ooi_set, valid_time=datetime.now(timezone.utc)).items
 
         # generate options
         options = [(o.primary_key, o.get_ooi_type()) for o in objects]

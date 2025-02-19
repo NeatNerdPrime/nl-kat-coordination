@@ -1,12 +1,24 @@
-from typing import Any, Dict, Optional
+import enum
+from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+
+
+class SchedulerType(str, enum.Enum):
+    """Enum for scheduler types."""
+
+    UNKNOWN = "unknown"
+    BOEFJE = "boefje"
+    NORMALIZER = "normalizer"
+    REPORT = "report"
 
 
 class Scheduler(BaseModel):
-    """Representation of a schedulers.Scheduler instance. Used for
-    unmarshalling of schedulers to a JSON representation."""
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
 
-    id: Optional[str]
-    populate_queue_enabled: Optional[bool]
-    priority_queue: Optional[Dict[str, Any]]
+    id: str
+    type: SchedulerType
+    item_type: Any
+    qsize: int = 0
+    last_activity: datetime | None = None

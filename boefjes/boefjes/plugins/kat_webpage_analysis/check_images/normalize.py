@@ -1,19 +1,18 @@
-from typing import Union, Iterator
-from octopoes.models import OOI, Reference
-
-from boefjes.job_models import NormalizerMeta
-from octopoes.models.ooi.findings import KATFindingType, Finding
-from octopoes.models.ooi.web import ImageMetadata
-
+from collections.abc import Iterable
 from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
 from PIL.ExifTags import TAGS
 
+from boefjes.job_models import NormalizerOutput
+from octopoes.models import Reference
+from octopoes.models.ooi.findings import Finding, KATFindingType
+from octopoes.models.ooi.web import ImageMetadata
 
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
+
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
     # fetch a reference to the original resource where these headers where downloaded from
-    resource = Reference.from_str(normalizer_meta.raw_data.boefje_meta.input_ooi)
+    resource = Reference.from_str(input_ooi["primary_key"])
     image = Image.open(BytesIO(raw))
     image.MAX_IMAGE_PIXELS = 7680 * 4320  # 8K pixels for now
 
@@ -55,5 +54,5 @@ def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI
         yield Finding(
             finding_type=kat_ooi.reference,
             ooi=resource,
-            description="Image ended up bigger than %d Pixels, possible decompression Bomb" % image.MAX_IMAGE_PIXELS,
+            description=f"Image ended up bigger than {image.MAX_IMAGE_PIXELS} Pixels, possible decompression Bomb",
         )

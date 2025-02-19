@@ -1,31 +1,35 @@
-from xml.dom import minidom
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-from ipaddress import ip_address, IPv4Address, IPv6Address
 import base64
+from collections.abc import Iterable
+from ipaddress import IPv4Address, IPv6Address, ip_address
+from urllib.parse import urlparse
 
-from typing import Iterator, Union
+from bs4 import BeautifulSoup
+from defusedxml import minidom
 
-from octopoes.models import OOI, Reference
-from octopoes.models.ooi.findings import Finding, CWEFindingType, CAPECFindingType, CVEFindingType
+from boefjes.job_models import NormalizerOutput
 from octopoes.models.ooi.dns.zone import Hostname
-from octopoes.models.ooi.network import IPAddressV4, IPAddressV6, Network, IPPort, Protocol
-from octopoes.models.ooi.web import WebScheme, Website, IPAddressHTTPURL, HostnameHTTPURL, URL, HTTPResource, HTTPHeader
-from octopoes.models.ooi.service import Service, IPService
+from octopoes.models.ooi.findings import CAPECFindingType, CVEFindingType, CWEFindingType, Finding
+from octopoes.models.ooi.network import IPAddressV4, IPAddressV6, IPPort, Network, Protocol
+from octopoes.models.ooi.service import IPService, Service
+from octopoes.models.ooi.web import URL, HostnameHTTPURL, HTTPHeader, HTTPResource, IPAddressHTTPURL, WebScheme, Website
 
-from boefjes.job_models import NormalizerMeta
+
+def find_network(data: dict) -> dict:
+    if "network" in data:
+        return data["network"]
+    for key, value in data.items():
+        if isinstance(value, dict):
+            result = find_network(value)
+            if result is not None:
+                return result
+    # Return internet if network is not found
+    return {"name": "internet"}
 
 
-def run(normalizer_meta: NormalizerMeta, raw: Union[bytes, str]) -> Iterator[OOI]:
-    parser = minidom.parse(raw)
+def run(input_ooi: dict, raw: bytes) -> Iterable[NormalizerOutput]:
+    parser = minidom.parseString(raw.decode("UTF-8"))
 
-    # assume that input ooi is none or a HostnameHTTPURL
-    if normalizer_meta.raw_data.boefje_meta and normalizer_meta.raw_data.boefje_meta.input_ooi:
-        ooi = Reference.from_str(normalizer_meta.raw_data.boefje_meta.input_ooi)
-        network = Network(name=ooi.tokenized.netloc.network.name)
-    else:
-        network = Network(name="internet")
-        yield network
+    network = Network(name=find_network(input_ooi).get("name", "internet"))
 
     tcp_protocol = Protocol.TCP
 

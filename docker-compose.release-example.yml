@@ -1,9 +1,10 @@
-version: "3.9"
+# You should use this file in the following manner:
+# `docker compose --env-file .env-prod -f docker-compose.release-example.yml`
 
 services:
   rabbitmq:
     restart: on-failure
-    image: "rabbitmq:3.9-management"
+    image: "docker.io/library/rabbitmq:3.12-management"
     ports:
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
@@ -12,22 +13,25 @@ services:
       interval: 5s
       retries: 10
     env_file:
+      - .env-prod
       - .env
 
   postgres:
-    image: postgres:15
+    image: docker.io/library/postgres:15
+    shm_size: 256MB
     ports:
       - "0.0.0.0:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
     env_file:
+      - .env-prod
       - .env
     environment:
       APPS: "ROCKY BYTES KATALOGUS SCHEDULER"
 
   crux:
-    image: "ghcr.io/dekkers/xtdb-http-multinode:v1.0.0"
+    image: "ghcr.io/dekkers/xtdb-http-multinode:v1.1.0"
     restart: on-failure
     ports:
       - "127.0.0.1:3000:3000"
@@ -43,6 +47,7 @@ services:
     image: "ghcr.io/minvws/nl-kat-octopoes:${KAT_VERSION}"
     command: web
     env_file:
+      - .env-prod
       - .env
 
   octopoes_api_worker:
@@ -53,7 +58,12 @@ services:
     image: "ghcr.io/minvws/nl-kat-octopoes:${KAT_VERSION}"
     command: worker-beat
     env_file:
+      - .env-prod
       - .env
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
 
   boefje:
     restart: on-failure
@@ -67,7 +77,10 @@ services:
       replicas: 1
     command: boefje
     env_file:
+      - .env-prod
       - .env
+    environment:
+      - BOEFJES_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-nl-kat-coordination}_default
 
   normalizer:
     restart: on-failure
@@ -79,11 +92,13 @@ services:
       replicas: 1
     command: normalizer
     env_file:
+      - .env-prod
       - .env
 
   rocky:
     restart: on-failure
     depends_on:
+      - rocky_worker
       - octopoes_api_worker
       - octopoes_api
       - postgres
@@ -94,10 +109,28 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     image: "ghcr.io/minvws/nl-kat-rocky:${KAT_VERSION}"
+    command: web
     env_file:
+      - .env-prod
       - .env
     environment:
       - DATABASE_MIGRATION=true
+
+  rocky_worker:
+    restart: on-failure
+    depends_on:
+      - octopoes_api_worker
+      - octopoes_api
+      - postgres
+      - boefje
+      - normalizer
+      - katalogus
+      - scheduler
+    image: "ghcr.io/minvws/nl-kat-rocky:${KAT_VERSION}"
+    command: worker
+    env_file:
+      - .env-prod
+      - .env
 
   bytes:
     restart: on-failure
@@ -107,6 +140,7 @@ services:
       - "127.0.0.1:8002:8000"
     image: "ghcr.io/minvws/nl-kat-bytes:${KAT_VERSION}"
     env_file:
+      - .env-prod
       - .env
     environment:
       - BYTES_DATA_DIR=/data
@@ -122,6 +156,7 @@ services:
     ports:
       - "127.0.0.1:8003:8000"
     env_file:
+      - .env-prod
       - .env
     environment:
       - DATABASE_MIGRATION=true
@@ -132,6 +167,7 @@ services:
     ports:
       - "127.0.0.1:8004:8000"
     env_file:
+      - .env-prod
       - .env
     depends_on:
       - postgres
@@ -139,14 +175,6 @@ services:
       - normalizer
       - octopoes_api
       - katalogus
-
-  keiko:
-    restart: on-failure
-    image: "ghcr.io/minvws/nl-kat-keiko:${KAT_VERSION}"
-    ports:
-      - "127.0.0.1:8005:8000"
-    env_file:
-      - .env
 
 volumes:
   postgres-data:
