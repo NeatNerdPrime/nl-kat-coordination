@@ -19,7 +19,7 @@ jobs:
       contents: read
     strategy:
       matrix:
-        dist: [ubuntu]
+        dist: [ubuntu22.04]
         package: [bytes, boefjes, rocky, octopoes, mula]
     runs-on: ubuntu-latest
 
