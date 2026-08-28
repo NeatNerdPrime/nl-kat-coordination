@@ -30,6 +30,7 @@ from octopoes.models.ooi.dns.records import (
     DNSTXTRecord,
 )
 from octopoes.models.ooi.dns.zone import DNSZone, Hostname, ResolvedHostname
+from octopoes.models.ooi.email import EmailAddress, EmailAddressInstance
 from octopoes.models.ooi.email_security import (
     DKIMExists,
     DKIMKey,
@@ -115,6 +116,7 @@ ConcreteFindingTypeType: TypeAlias = (
     | CAPECFindingType
     | SnykFindingType
 )
+EmailAddressType: TypeAlias = EmailAddress | EmailAddressInstance
 FindingTypeType: TypeAlias = FindingType | ConcreteFindingTypeType
 IdentifierType: TypeAlias = Identifier | IdentifierVendor | IdentifierInstance
 ConcreteNetworkType: TypeAlias = (
@@ -180,6 +182,7 @@ ConcreteOOIType: TypeAlias = (
     | AssetReport
     | GeographicPoint
     | ReportRecipe
+    | EmailAddressType
     | IdentifierType
 )
 

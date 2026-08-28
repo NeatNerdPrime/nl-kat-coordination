@@ -86,6 +86,7 @@ class OOIRepositoryTest(TestCase):
                             (pull ?e [
                                 :xt/id
                                 {:IPService/_ip_port [*]}
+                                {:EmailAddressInstance/_location [*]}
                                 {:IdentifierInstance/_location [*]}
                                 {:Config/_ooi [*]}
                                 {:Finding/_ooi [*]}
